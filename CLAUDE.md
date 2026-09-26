@@ -23,12 +23,25 @@ Verification playbook below in order, run what can be run, reason about
 the rest, and finish with a findings report (format at the end). Do not
 change code while checking unless asked — report first.
 
-Prerequisites for the runnable checks (Debian/Ubuntu):
-`ffmpeg python3 python3-yaml chromium`, and MediaMTX (the pinned
-`v1.19.1` binary `install.sh` downloads, or your package manager) with
-its path in `$MEDIAMTX`. No GPU is needed for the demo — it encodes with
-x264. The VAAPI/QSV encoders and the hardware bench need a real Intel-GPU
-box and will not run in a review sandbox; say so rather than faking them.
+The runnable checks need `ffmpeg`, `python3` with PyYAML, and a
+MediaMTX binary (path in `$MEDIAMTX`). Chromium is **not** needed — the
+demo drives the scorebug FIFO with a synthetic writer, not the live
+renderer. No GPU is needed for the demo; it encodes with x264.
+
+This checkout runs on either platform — adapt to the one you are on:
+
+- **macOS (Gareth's laptop).** `brew install ffmpeg mediamtx` and
+  `pip3 install pyyaml`; set `MEDIAMTX="$(command -v mediamtx)"`.
+  Sections A, B, C and E all run. `install.sh` and the `systemd/` units
+  are Debian-only — **read and `sh -n` them, never run them here**
+  (no `apt`, no `systemd`, no `useradd`). The VAAPI/QSV encoders and the
+  hardware bench (D) need a real Intel-GPU Linux box and do **not** run on
+  a Mac — report them NOT-RUN, do not fake them or swap in videotoolbox.
+- **Debian/Ubuntu (the encoder box).** `apt-get install ffmpeg python3
+  python3-yaml`; MediaMTX is the pinned `v1.19.1` binary `install.sh`
+  downloads. All sections run, including the bench on real hardware.
+
+Either way: say what you could not run rather than faking a result.
 
 ## Verification playbook
 
