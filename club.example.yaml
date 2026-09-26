@@ -1,0 +1,33 @@
+# streamer — per-club configuration. Copy to /etc/streamer/club.yaml and
+# fill in. After ANY change here or in secrets.env:
+#     streamer-generate [--sheets 1-6]   # then restart the units it names
+#
+# Credentials NEVER go in this file. Camera passwords and stream keys live
+# in /etc/streamer/secrets.env (mode 600) and are referenced as ${VARS}.
+
+club: exampleton              # counter club slug; also names your streams
+counter_server: https://counter.gareth.live   # remove line entirely if you
+                              # do not use the counter scorebug
+canvas: 1920x1080             # output canvas per sheet (1280x720 also fine)
+fps: 30
+bitrate_k: 4500               # video bitrate; ~4.5 Mbps suits 1080p30 sport
+encoder: vaapi                # vaapi (Intel GPU on Debian — recommended),
+                              # qsv (needs a libvpl ffmpeg), or
+                              # x264 (CPU only — a few sheets at most)
+layout: hero-away-bug-rail    # or full-bug (single camera + scorebug)
+sponsor_image: /etc/streamer/sponsor.png   # remove line for no rail
+destination_default: rtmp://a.rtmp.youtube.com/live2
+
+# One entry per sheet. Ask each camera for its DEFAULT stream — no query
+# parameters. Old cameras encode once per unique stream configuration;
+# identical requests share one encoder instance (see README). The box
+# pulls each camera exactly once via MediaMTX and everything local (the
+# compositor, kiosk TVs, a coach's VLC) reads from the box instead:
+#     rtsp://<this-box>:8554/cam-<n>-home
+sheets:
+  - n: 1
+    home: rtsp://${CAM_USER}:${CAM_PASS}@192.168.1.51/axis-media/media.amp
+    away: rtsp://${CAM_USER}:${CAM_PASS}@192.168.1.71/axis-media/media.amp
+  - n: 2
+    home: rtsp://${CAM_USER}:${CAM_PASS}@192.168.1.52/axis-media/media.amp
+    away: rtsp://${CAM_USER}:${CAM_PASS}@192.168.1.72/axis-media/media.amp

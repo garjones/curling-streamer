@@ -1,0 +1,10 @@
+# runtime / local only — never commit
+vendor/
+auto.crt
+auto.key
+*.pyc
+__pycache__/
+# secrets and generated config never live in the repo
+secrets.env
+club.yaml
+/etc/
