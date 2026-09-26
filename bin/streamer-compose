@@ -50,6 +50,12 @@ def main():
     # away from the streaming destination. Production sets neither.
     duration = env("DURATION")
     listen = env("RTSP_LISTEN")   # demo only: act as RTSP server on inputs
+    if duration:
+        # The bench reads ffmpeg's "speed=" progress line, which -loglevel
+        # warning suppresses (verified on ffmpeg 9: zero lines without this).
+        # Only for timed runs: in production the \r-separated progress
+        # output would flood the journal.
+        cmd.append("-stats")
 
     inputs = []                   # (label, extra per-input args, url)
 
@@ -106,6 +112,14 @@ def main():
     #    changes while ffmpeg runs — rotation will need its own FIFO) ------
     sponsor = env("SPONSOR")
     if sponsor:
+        if not os.path.exists(sponsor):
+            # ffmpeg would exit 1 and the unit would restart every 5 s; a
+            # missing file is configuration, so park with a readable reason.
+            print(f"streamer-compose: sponsor image {sponsor} does not exist — "
+                  "copy it there (or remove sponsor_image from club.yaml and "
+                  "re-run streamer-generate), then systemctl restart "
+                  f"streamer@{sheet}", file=sys.stderr)
+            sys.exit(EX_CONFIG)
         cmd += ["-loop", "1", "-framerate", "1", "-i", sponsor]
         filters.append(
             f"[{idx}:v]scale={env('RAIL_W','1920')}:{env('RAIL_H','360')}[rail]")
