@@ -31,17 +31,42 @@ files systemd reads; run it after every config change.
 
 ## Install
 
-Debian stable (12/13) amd64, as root:
+**One line on a fresh Debian stable (amd64) box:**
 
 ```sh
-./install.sh
-# then follow the printed next-steps (club.yaml, secrets.env,
-# streamer-generate --sheets 1-6, enable units, open :8080)
+curl -fsSL https://raw.githubusercontent.com/garjones/curling-streamer/main/bootstrap.sh \
+  | sudo sh -s -- --club <owner>/<site-repo> --sheets 1-6
 ```
 
-The installer pins MediaMTX v1.19.1 by SHA-256 and installs the Intel
-VAAPI driver (`intel-media-va-driver-non-free` — needs the `non-free`
-apt component; the iHD driver covers Arc/DG2 and recent iGPUs).
+It installs the product, then asks for exactly one thing: the **club
+machine key**, an SSH private key kept in the club's password manager.
+That key reads the club's private *site repo* on GitHub (as a read-only
+deploy key) and decrypts the secrets inside it (as an `age` identity —
+`age` accepts SSH keys directly). Everything else is fetched. Running the
+same line again is the upgrade path.
+
+The site repo is the club's, not the product's: one private repo per
+club holding `streaming/club.yaml`, `streaming/secrets.env.age` (the
+secrets file encrypted to the machine key) and optionally
+`streaming/sponsor.png`. That is the whole contract; `streamer-deploy`
+applies such a checkout to the box and is what `bootstrap.sh` calls last:
+
+```sh
+cd /opt/curling-club && git pull && sudo streamer-deploy . --sheets 1-6
+```
+
+Rebuilding a box therefore needs nothing that lives only on someone's
+laptop: the product is public, the site repo is on GitHub, and the one
+secret that unlocks it is in the password manager. Rotating the machine
+key means re-encrypting `secrets.env.age` to the new key and replacing
+the deploy key — one commit and one GitHub setting.
+
+**By hand**, as root: `./install.sh`, then follow its printed
+next-steps (`club.yaml`, `secrets.env`, `streamer-generate --sheets 1-6`,
+enable units, open `:8080`). The installer pins MediaMTX v1.19.1 by
+SHA-256 and installs the Intel VAAPI driver
+(`intel-media-va-driver-non-free` — needs the `non-free` apt component;
+the iHD driver covers Arc/DG2 and recent iGPUs).
 
 ## Layouts
 

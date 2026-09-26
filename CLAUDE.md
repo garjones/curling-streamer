@@ -48,7 +48,12 @@ Either way: say what you could not run rather than faking a result.
 ### A. Static checks (always runnable)
 1. Byte-compile the Python:
    `python3 -m py_compile bin/streamer-generate bin/streamer-compose bin/streamer-status-server renderer/*.py`
-2. Syntax-check the shell: `sh -n install.sh tools/*.sh`
+2. Syntax-check the shell: `sh -n install.sh bootstrap.sh bin/streamer-deploy tools/*.sh`
+   (`bootstrap.sh` and `install.sh` are Debian-only — read, never run
+   here; `streamer-deploy` runs on a Mac with `STREAMER_ETC=<dir>` and
+   `--no-enable` against a fake club dir holding `streaming/club.yaml`
+   and a `secrets.env.age` encrypted to any SSH key — check it decrypts,
+   generates, and exits 78 on a missing or wrong key)
 3. Config generation, dry run — prove `streamer-generate` turns the
    example config into correct runtime files:
    ```sh
