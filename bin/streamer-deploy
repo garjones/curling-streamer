@@ -1,0 +1,124 @@
+#!/bin/sh
+# streamer-deploy — apply a club's site repository to THIS encoder box.
+#
+#   streamer-deploy <club-dir> --sheets 1-6 [--key /etc/streamer/machine.key]
+#                   [--no-enable]
+#
+# <club-dir> is a checkout of the club's private site repo (bootstrap.sh
+# puts it in /opt/curling-club). The contract is one folder:
+#
+#   <club-dir>/streaming/club.yaml        required — the club's one config file
+#   <club-dir>/streaming/secrets.env.age  optional — secrets.env encrypted with
+#                                         age to the club machine key (an SSH
+#                                         key); decrypted into /etc/streamer
+#   <club-dir>/streaming/sponsor.png      optional — sponsor rail image
+#
+# Without secrets.env.age, /etc/streamer/secrets.env must already exist
+# (pasted from the club's password manager). Idempotent: re-run after every
+# `git pull` in <club-dir> — that is how config and secret changes land.
+# Exit 78 means "something is missing that retrying will not fix".
+
+set -eu
+
+ETC="${STREAMER_ETC:-/etc/streamer}"
+KEY="$ETC/machine.key"
+ENABLE=1
+SHEETS=""
+CLUB=""
+ARGS="$*"
+
+usage() { sed -n '2,19p' "$0" >&2; exit 1; }
+die() { echo "streamer-deploy: $*" >&2; exit 78; }
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --sheets)    SHEETS=$2; shift 2;;
+        --key)       KEY=$2; shift 2;;
+        --no-enable) ENABLE=0; shift;;
+        -h|--help)   usage;;
+        -*)          echo "streamer-deploy: unknown option $1" >&2; usage;;
+        *)           [ -z "$CLUB" ] || usage; CLUB=$1; shift;;
+    esac
+done
+[ -n "$CLUB" ] && [ -n "$SHEETS" ] || usage
+SRC="$CLUB/streaming"
+[ -f "$SRC/club.yaml" ] || die "$SRC/club.yaml not found — is $CLUB a checkout of the club's site repo?"
+if [ "$ETC" = /etc/streamer ] && [ "$(id -u)" != 0 ]; then
+    echo "run as root: sudo $0 $ARGS" >&2; exit 1
+fi
+command -v streamer-generate >/dev/null 2>&1 || \
+    die "streamer is not installed on this box — run install.sh (or bootstrap.sh) first"
+
+install -d -m 755 "$ETC"
+
+# ---- secrets ---------------------------------------------------------------
+if [ -f "$SRC/secrets.env.age" ]; then
+    [ -f "$KEY" ] || die "$SRC/secrets.env.age is encrypted to the club machine key, but $KEY
+does not exist. Paste the key from the club password manager:
+    umask 077; cat > $KEY    (paste the whole -----BEGIN ... -----END block, then Ctrl-D)
+or re-run bootstrap.sh, which asks for it."
+    command -v age >/dev/null 2>&1 || die "age is not installed (apt-get install age)"
+    umask 077
+    if ! age -d -i "$KEY" -o "$ETC/secrets.env.new" "$SRC/secrets.env.age" 2>"$ETC/.age-err"; then
+        rm -f "$ETC/secrets.env.new"
+        die "could not decrypt $SRC/secrets.env.age with $KEY — wrong machine key for this club? ($(tr '\n' ' ' < "$ETC/.age-err"))"
+    fi
+    rm -f "$ETC/.age-err"
+    mv -f "$ETC/secrets.env.new" "$ETC/secrets.env"
+    umask 022
+    echo "secrets.env: decrypted from the club repo"
+elif [ -f "$ETC/secrets.env" ]; then
+    echo "secrets.env: keeping the existing $ETC/secrets.env (club repo has no secrets.env.age)"
+else
+    die "$ETC/secrets.env is missing and the club repo has no secrets.env.age.
+Paste it from the club password manager:
+    umask 077; cat > $ETC/secrets.env    (paste, then Ctrl-D)
+then re-run: $0 $ARGS"
+fi
+chmod 600 "$ETC/secrets.env"
+if grep -q '^CAM_PASS=$' "$ETC/secrets.env"; then
+    die "$ETC/secrets.env still has the blank template values — fill it in"
+fi
+blank=$(grep -oE '^SHEET_[0-9]+_KEY=$' "$ETC/secrets.env" | sed 's/=$//' | tr '\n' ' ')
+[ -z "$blank" ] || echo "note: blank stream keys: ${blank}- those sheets will park until filled"
+
+# ---- config ----------------------------------------------------------------
+install -m 644 "$SRC/club.yaml" "$ETC/club.yaml"
+if [ -f "$SRC/sponsor.png" ]; then
+    install -m 644 "$SRC/sponsor.png" "$ETC/sponsor.png"
+elif grep -q '^sponsor_image:' "$ETC/club.yaml"; then
+    echo "note: club.yaml names a sponsor image but the club repo has no streaming/sponsor.png — streams will park until it exists"
+fi
+streamer-generate --sheets "$SHEETS"
+
+# ---- units -----------------------------------------------------------------
+expand_sheets() {
+    echo "$1" | tr ',' '\n' | while read -r part; do
+        case "$part" in
+            *-*) seq "${part%-*}" "${part#*-}";;
+            *)   echo "$part";;
+        esac
+    done
+}
+if [ "$ENABLE" = 1 ] && command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+    systemctl enable --now streamer-mediamtx streamer-status >/dev/null 2>&1
+    systemctl enable streamer-renderer >/dev/null 2>&1   # stays inactive if renderer.env is empty
+    for n in $(expand_sheets "$SHEETS"); do
+        systemctl enable "streamer@$n" >/dev/null 2>&1
+    done
+    # Renderer before compositors: a compositor whose FIFO writer restarts
+    # keeps repeating the last scorebug frame until it is itself restarted.
+    systemctl restart streamer-mediamtx streamer-renderer
+    for n in $(expand_sheets "$SHEETS"); do
+        systemctl restart "streamer@$n" || true
+    done
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    echo
+    echo "streamer-deploy: sheets $SHEETS applied and (re)started."
+    echo "status page: http://${ip:-<this-box>}:8080/      per sheet: systemctl status streamer@N"
+else
+    echo
+    echo "streamer-deploy: config written for sheets $SHEETS (units not touched)."
+    echo "apply with: systemctl restart streamer-mediamtx streamer-renderer 'streamer@*'"
+fi

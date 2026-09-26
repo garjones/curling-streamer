@@ -22,7 +22,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 echo "== packages"
 apt-get update -qq
 apt-get install -y --no-install-recommends \
-    ffmpeg python3 python3-yaml chromium curl ca-certificates
+    ffmpeg python3 python3-yaml chromium curl ca-certificates age git
 # Intel GPU encode (VAAPI, iHD driver — covers Arc/DG2 and recent iGPUs).
 # The driver lives in the non-free component; if this fails, add
 # "non-free non-free-firmware" to /etc/apt/sources.list and re-run.
@@ -57,6 +57,7 @@ echo "== streamer files"
 install -m 755 "${HERE}/bin/streamer-generate"      /usr/local/bin/
 install -m 755 "${HERE}/bin/streamer-compose"       /usr/local/bin/
 install -m 755 "${HERE}/bin/streamer-status-server" /usr/local/bin/
+install -m 755 "${HERE}/bin/streamer-deploy"        /usr/local/bin/
 install -d /opt/streamer/renderer
 install -m 644 "${HERE}"/renderer/*.py "${HERE}"/renderer/*.md /opt/streamer/renderer/ 2>/dev/null || \
     install -m 644 "${HERE}"/renderer/*.py /opt/streamer/renderer/
