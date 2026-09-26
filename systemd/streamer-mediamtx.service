@@ -1,0 +1,19 @@
+[Unit]
+Description=Streamer camera fan-out (MediaMTX)
+Documentation=file:///opt/streamer/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=streamer
+Group=streamer
+ExecStart=/usr/local/bin/mediamtx /etc/streamer/mediamtx.yml
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/etc/streamer
+
+[Install]
+WantedBy=multi-user.target

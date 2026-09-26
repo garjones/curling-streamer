@@ -1,0 +1,14 @@
+[Unit]
+Description=Streamer status page (http://this-box:8080/)
+Documentation=file:///opt/streamer/README.md
+After=network-online.target
+
+[Service]
+User=streamer
+Group=streamer
+ExecStart=/usr/local/bin/streamer-status-server
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

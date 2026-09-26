@@ -1,0 +1,25 @@
+[Unit]
+Description=Streamer scorebug renderer (counter FIFO feeds)
+Documentation=file:///opt/streamer/README.md
+After=network-online.target
+Wants=network-online.target
+# No scorebug configured? streamer-generate leaves renderer.env empty and
+# the condition below keeps this unit quietly inactive.
+ConditionFileNotEmpty=/etc/streamer/renderer.env
+
+[Service]
+User=streamer
+Group=streamer
+EnvironmentFile=/etc/streamer/renderer.env
+# /run/counter is created fresh each boot; the compositors read the FIFOs
+# from the same path (counter's contract: bug-NN.fifo, 640x360 RGBA @1fps).
+RuntimeDirectory=counter
+RuntimeDirectoryMode=0755
+ExecStart=/usr/bin/python3 /opt/streamer/renderer/counter_renderer.py \
+    --server ${COUNTER_SERVER} --club ${COUNTER_CLUB} \
+    --sheets ${RENDERER_SHEETS} --fifo-dir /run/counter
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
