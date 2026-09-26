@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""streamer-generate — turn club.yaml + secrets.env into runtime config.
+
+Reads   /etc/streamer/club.yaml     (the club's one configuration file)
+        /etc/streamer/secrets.env   (camera credentials + stream keys;
+                                     never committed anywhere, mode 600)
+Writes  /etc/streamer/mediamtx.yml  (camera fan-out; credentials embedded,
+                                     which is why it is written mode 640)
+        /etc/streamer/sheet-N.env   (one per selected sheet, read by
+                                     streamer@N.service)
+        /etc/streamer/status.json   (what the status page monitors)
+
+Run it again after any change to club.yaml or secrets.env, then
+`systemctl restart 'streamer@*' streamer-mediamtx`.
+
+The generator is deliberately dumb: it validates, expands ${VARS} from
+secrets.env, computes tile geometry from the layout preset, and writes
+plain files a human can read. No daemon, no state.
+"""
+
+import argparse
+import json
+import os
+import re
+import stat
+import sys
+
+try:
+    import yaml
+except ImportError:
+    sys.exit("streamer-generate: python3-yaml is not installed "
+             "(apt-get install python3-yaml)")
+
+BUG_W, BUG_H = 640, 360          # fixed by counter's scorebug contract
+
+# Layout presets. Tiles are fractions of the canvas; the scorebug tile is
+# scaled only if the slot differs from 640x360 (at 1920x1080 it is native).
+#   hero-away-bug-rail — the KCC Silver layout: hero top-left, away camera
+#     top-right, scorebug under it, sponsor rail across the bottom.
+#   full-bug — one camera full-frame, scorebug bottom-right.
+LAYOUTS = {
+    "hero-away-bug-rail": {
+        "hero": (0, 0, 2 / 3, 2 / 3),
+        "away": (2 / 3, 0, 1 / 3, 1 / 3),
+        "bug":  (2 / 3, 1 / 3, 1 / 3, 1 / 3),
+        "rail": (0, 2 / 3, 1, 1 / 3),
+    },
+    "full-bug": {
+        "hero": (0, 0, 1, 1),
+        "bug":  None,            # anchored bottom-right at native size
+    },
+}
+
+
+def die(msg):
+    sys.exit(f"streamer-generate: ERROR: {msg}")
+
+
+def warn(msg):
+    print(f"streamer-generate: WARNING: {msg}", file=sys.stderr)
+
+
+def read_secrets(path):
+    """KEY=VALUE lines; systemd EnvironmentFile syntax, no expansion."""
+    secrets = {}
+    if not os.path.exists(path):
+        warn(f"{path} not found — camera URLs with ${{VARS}} and stream "
+             "keys will be missing")
+        return secrets
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    if mode & 0o077:
+        warn(f"{path} is mode {oct(mode)}; it holds credentials and "
+             "should be 600")
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            secrets[k.strip()] = v.strip().strip('"')
+    return secrets
+
+
+def expand(text, secrets, context):
+    def sub(m):
+        var = m.group(1)
+        if var not in secrets:
+            die(f"{context}: ${{{var}}} is not defined in secrets.env")
+        return secrets[var]
+    return re.sub(r"\$\{(\w+)\}", sub, text)
+
+
+def geometry(layout_name, canvas_w, canvas_h):
+    preset = LAYOUTS.get(layout_name)
+    if preset is None:
+        die(f"unknown layout '{layout_name}' "
+            f"(known: {', '.join(sorted(LAYOUTS))})")
+    tiles = {}
+    for name, frac in preset.items():
+        if frac is None:                       # bug anchored bottom-right
+            tiles[name] = (canvas_w - BUG_W, canvas_h - BUG_H, BUG_W, BUG_H)
+            continue
+        fx, fy, fw, fh = frac
+        tiles[name] = (round(canvas_w * fx), round(canvas_h * fy),
+                       round(canvas_w * fw), round(canvas_h * fh))
+    return tiles
+
+
+def parse_sheet_selector(spec, available):
+    if not spec:
+        return available
+    chosen = set()
+    for part in spec.split(","):
+        if "-" in part:
+            lo, hi = part.split("-", 1)
+            chosen.update(range(int(lo), int(hi) + 1))
+        else:
+            chosen.add(int(part))
+    missing = chosen - set(available)
+    if missing:
+        die(f"--sheets asks for {sorted(missing)} but club.yaml only "
+            f"defines {sorted(available)}")
+    return sorted(chosen)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--etc", default=os.environ.get("STREAMER_ETC",
+                                                    "/etc/streamer"),
+                    help="config directory (default /etc/streamer)")
+    ap.add_argument("--sheets", default="",
+                    help="sheets THIS box carries, e.g. 1-6 or 2,4,9 "
+                         "(default: every sheet in club.yaml)")
+    args = ap.parse_args()
+    etc = args.etc
+
+    club_path = os.path.join(etc, "club.yaml")
+    if not os.path.exists(club_path):
+        die(f"{club_path} not found — copy club.example.yaml there and "
+            "fill it in")
+    with open(club_path) as f:
+        club = yaml.safe_load(f)
+    secrets = read_secrets(os.path.join(etc, "secrets.env"))
+
+    name = club.get("club") or die("club.yaml: 'club' (slug) is required")
+    canvas = str(club.get("canvas", "1920x1080"))
+    m = re.fullmatch(r"(\d+)x(\d+)", canvas)
+    if not m:
+        die(f"club.yaml: canvas '{canvas}' is not WxH")
+    canvas_w, canvas_h = int(m.group(1)), int(m.group(2))
+    fps = int(club.get("fps", 30))
+    bitrate_k = int(club.get("bitrate_k", 4500))
+    encoder = club.get("encoder", "vaapi")
+    if encoder not in ("vaapi", "qsv", "x264"):
+        die(f"club.yaml: encoder '{encoder}' must be vaapi, qsv or x264")
+    layout = club.get("layout", "hero-away-bug-rail")
+    counter_server = club.get("counter_server")  # None => no scorebug
+    sponsor = club.get("sponsor_image")          # None => no rail
+    dest_default = club.get("destination_default",
+                            "rtmp://a.rtmp.youtube.com/live2")
+    rtsp_base = club.get("rtsp_base", "rtsp://127.0.0.1:8554")
+    vaapi_device = club.get("vaapi_device", "/dev/dri/renderD128")
+
+    sheets_cfg = club.get("sheets") or die("club.yaml: 'sheets' is required")
+    by_n = {}
+    for s in sheets_cfg:
+        n = int(s["n"])
+        if n in by_n:
+            die(f"club.yaml: sheet {n} defined twice")
+        by_n[n] = s
+    selected = parse_sheet_selector(args.sheets, sorted(by_n))
+
+    tiles = geometry(layout, canvas_w, canvas_h)
+    needs_away = "away" in tiles
+    if sponsor and "rail" not in tiles:
+        warn(f"layout '{layout}' has no sponsor rail; sponsor_image ignored")
+    if sponsor and not os.path.exists(sponsor):
+        warn(f"sponsor_image {sponsor} does not exist (yet)")
+
+    # ---- mediamtx.yml: one pull per camera, everything reads from us ----
+    # Credentials end up in this file, which is why it is written 640 and
+    # lives in /etc/streamer. The cameras are only ever asked for their
+    # DEFAULT stream (no query parameters): identical streams mean an old
+    # camera encodes once no matter how many local consumers we have.
+    paths = {}
+    cam_hosts = {}
+    for n in selected:
+        s = by_n[n]
+        for role in (("home", "away") if needs_away else ("home",)):
+            url = s.get(role) or die(f"sheet {n}: '{role}' camera URL "
+                                     f"required by layout '{layout}'")
+            url = expand(url, secrets, f"sheet {n} {role}")
+            paths[f"cam-{n}-{role}"] = {
+                "source": url,
+                "sourceOnDemand": True,
+            }
+            host = re.sub(r"^rtsp://(?:[^@/]*@)?([^:/]+).*", r"\1", url)
+            cam_hosts.setdefault(n, {})[role] = host
+
+    mediamtx = {
+        # Keep the surface small: RTSP only, loopback API off, no HLS/RTMP/
+        # WebRTC/SRT servers. Local consumers (compositor, kiosk TVs, VLC)
+        # read rtsp://<box>:8554/cam-N-role.
+        "logLevel": "info",
+        "api": False,
+        "metrics": False,
+        "playback": False,
+        "rtmp": False,
+        "hls": False,
+        "webrtc": False,
+        "srt": False,
+        "paths": paths,
+    }
+    os.makedirs(etc, exist_ok=True)
+    mtx_path = os.path.join(etc, "mediamtx.yml")
+    with open(mtx_path, "w") as f:
+        yaml.safe_dump(mediamtx, f, sort_keys=False)
+    os.chmod(mtx_path, 0o640)
+
+    # ---- per-sheet env files, read by streamer@N.service ----------------
+    for n in selected:
+        hx, hy, hw, hh = tiles["hero"]
+        lines = {
+            "SHEET": n,
+            "CLUB": name,
+            "CANVAS_W": canvas_w, "CANVAS_H": canvas_h,
+            "FPS": fps, "BITRATE_K": bitrate_k,
+            "ENCODER": encoder, "VAAPI_DEVICE": vaapi_device,
+            "HOME_URL": f"{rtsp_base}/cam-{n}-home",
+            "HERO_X": hx, "HERO_Y": hy, "HERO_W": hw, "HERO_H": hh,
+            "DEST_URL": dest_default,
+        }
+        if needs_away:
+            ax, ay, aw, ah = tiles["away"]
+            lines.update(AWAY_URL=f"{rtsp_base}/cam-{n}-away",
+                         AWAY_X=ax, AWAY_Y=ay, AWAY_W=aw, AWAY_H=ah)
+        if counter_server:
+            bx, by_, bw, bh = tiles["bug"]
+            lines.update(FIFO=f"/run/counter/bug-{n:02d}.fifo",
+                         BUG_X=bx, BUG_Y=by_, BUG_W=bw, BUG_H=bh)
+        if sponsor and "rail" in tiles:
+            rx, ry, rw, rh = tiles["rail"]
+            lines.update(SPONSOR=sponsor,
+                         RAIL_X=rx, RAIL_Y=ry, RAIL_W=rw, RAIL_H=rh)
+        env_path = os.path.join(etc, f"sheet-{n}.env")
+        with open(env_path, "w") as f:
+            f.write(f"# generated by streamer-generate from club.yaml — "
+                    f"edit club.yaml, not this\n")
+            for k, v in lines.items():
+                f.write(f"{k}={v}\n")
+        os.chmod(env_path, 0o644)
+        if f"SHEET_{n}_KEY" not in secrets:
+            warn(f"sheet {n}: SHEET_{n}_KEY missing from secrets.env — "
+                 f"streamer@{n} will refuse to start until it is set")
+
+    # ---- what the status page watches -----------------------------------
+    status = {
+        "club": name,
+        "counter_server": counter_server,
+        "sheets": [{"n": n, "cameras": cam_hosts.get(n, {})}
+                   for n in selected],
+    }
+    with open(os.path.join(etc, "status.json"), "w") as f:
+        json.dump(status, f, indent=2)
+
+    # ---- renderer env ----------------------------------------------------
+    rend_path = os.path.join(etc, "renderer.env")
+    with open(rend_path, "w") as f:
+        f.write("# generated by streamer-generate from club.yaml\n")
+        if counter_server:
+            f.write(f"COUNTER_SERVER={counter_server}\nCOUNTER_CLUB={name}\n")
+            f.write(f"RENDERER_SHEETS={','.join(str(n) for n in selected)}\n")
+
+    print(f"streamer-generate: wrote config for sheets "
+          f"{','.join(str(n) for n in selected)} "
+          f"({layout} @ {canvas}, {encoder}, {fps} fps, {bitrate_k}k)")
+    print("apply with: systemctl restart streamer-mediamtx "
+          "streamer-renderer 'streamer@*'")
+
+
+if __name__ == "__main__":
+    main()

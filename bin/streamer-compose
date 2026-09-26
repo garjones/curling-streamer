@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""streamer-compose — build and exec the ffmpeg compositor for one sheet.
+
+Everything comes from the environment (systemd loads sheet-N.env and
+secrets.env; see streamer@.service). This script only assembles the
+command line — cleanly, with no shell quoting — and execs ffmpeg, so the
+ffmpeg process IS the service process and systemd supervises it directly.
+
+Inputs (in order, only those configured):
+  0  home camera   RTSP from the local MediaMTX fan-out
+  1  away camera   RTSP (layouts with an away tile)
+  2  scorebug      raw RGBA over the renderer's named FIFO, 640x360 @ 1 fps
+                   (overlay repeats the last frame between updates)
+  3  sponsor rail  a static image (rotation is a TODO — see README)
+  +  silence       anullsrc; YouTube wants an audio track
+
+Exit code 78 (EX_CONFIG) means "configuration missing, retrying is
+useless" — the unit's RestartPreventExitStatus stops the restart loop so
+`systemctl status streamer@N` shows a plain, human-readable reason.
+"""
+
+import os
+import sys
+
+EX_CONFIG = 78
+
+
+def env(key, default=None, required=False):
+    v = os.environ.get(key, "")
+    if v:
+        return v
+    if required:
+        print(f"streamer-compose: {key} is not set — run streamer-generate",
+              file=sys.stderr)
+        sys.exit(EX_CONFIG)
+    return default
+
+
+def main():
+    sheet = int(env("SHEET", required=True))
+    fps = int(env("FPS", "30"))
+    canvas_w = int(env("CANVAS_W", "1920"))
+    canvas_h = int(env("CANVAS_H", "1080"))
+    bitrate_k = int(env("BITRATE_K", "4500"))
+    encoder = env("ENCODER", "vaapi")
+
+    cmd = ["ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "warning"]
+
+    # Bench/demo hooks: DURATION caps the run; OUTPUT_OVERRIDE redirects
+    # away from the streaming destination. Production sets neither.
+    duration = env("DURATION")
+    listen = env("RTSP_LISTEN")   # demo only: act as RTSP server on inputs
+
+    inputs = []                   # (label, extra per-input args, url)
+
+    def rtsp_input(url):
+        args = ["-rtsp_transport", "tcp"]
+        if listen:
+            args = ["-rtsp_flags", "listen"] + args
+        return args + ["-i", url]
+
+    filters = [f"color=c=black:size={canvas_w}x{canvas_h}:rate={fps}[base]"]
+    chain = "base"
+    idx = 0
+
+    def overlay(src_label, x, y, out_label):
+        nonlocal chain
+        filters.append(f"[{chain}][{src_label}]overlay={x}:{y}[{out_label}]")
+        chain = out_label
+
+    # -- home / hero -------------------------------------------------------
+    home = env("HOME_URL", required=True)
+    cmd += rtsp_input(home)
+    filters.append(
+        f"[{idx}:v]scale={env('HERO_W','1280')}:{env('HERO_H','720')}[hero]")
+    overlay("hero", env("HERO_X", "0"), env("HERO_Y", "0"), "v1")
+    idx += 1
+
+    # -- away --------------------------------------------------------------
+    away = env("AWAY_URL")
+    if away:
+        cmd += rtsp_input(away)
+        filters.append(
+            f"[{idx}:v]scale={env('AWAY_W','640')}:{env('AWAY_H','360')}[away]")
+        overlay("away", env("AWAY_X", "1280"), env("AWAY_Y", "0"), "v2")
+        idx += 1
+
+    # -- scorebug via FIFO -------------------------------------------------
+    # NEVER "simplify" this to -loop 1 -i bug.png: ffmpeg decodes a still
+    # image once and caches it forever (verified by experiment, twice —
+    # see counter/README.md). The FIFO carries raw RGBA at ~1 fps and
+    # overlay's default repeatlast holds the frame between updates.
+    fifo = env("FIFO")
+    if fifo:
+        cmd += ["-f", "rawvideo", "-pix_fmt", "rgba",
+                "-video_size", "640x360", "-framerate", "1", "-i", fifo]
+        bw, bh = env("BUG_W", "640"), env("BUG_H", "360")
+        if (bw, bh) != ("640", "360"):
+            filters.append(f"[{idx}:v]scale={bw}:{bh}[bug]")
+        else:
+            filters.append(f"[{idx}:v]copy[bug]")
+        overlay("bug", env("BUG_X", "1280"), env("BUG_Y", "360"), "v3")
+        idx += 1
+
+    # -- sponsor rail (static image; safe with -loop because it never
+    #    changes while ffmpeg runs — rotation will need its own FIFO) ------
+    sponsor = env("SPONSOR")
+    if sponsor:
+        cmd += ["-loop", "1", "-framerate", "1", "-i", sponsor]
+        filters.append(
+            f"[{idx}:v]scale={env('RAIL_W','1920')}:{env('RAIL_H','360')}[rail]")
+        overlay("rail", env("RAIL_X", "0"), env("RAIL_Y", "720"), "v4")
+        idx += 1
+
+    # -- silent audio ------------------------------------------------------
+    cmd += ["-f", "lavfi", "-i",
+            "anullsrc=channel_layout=stereo:sample_rate=44100"]
+    audio_idx = idx
+
+    # -- encoder -----------------------------------------------------------
+    if encoder == "vaapi":
+        cmd = cmd[:2] + ["-vaapi_device",
+                         env("VAAPI_DEVICE", "/dev/dri/renderD128")] + cmd[2:]
+        filters.append(f"[{chain}]format=nv12,hwupload[vout]")
+        venc = ["-c:v", "h264_vaapi"]
+    elif encoder == "qsv":
+        filters.append(f"[{chain}]format=nv12[vout]")
+        venc = ["-c:v", "h264_qsv", "-preset", "medium"]
+    else:  # x264 — software fallback, also what the container demo uses
+        filters.append(f"[{chain}]format=yuv420p[vout]")
+        venc = ["-c:v", "libx264", "-preset", "veryfast"]
+
+    cmd += ["-filter_complex", ";".join(filters),
+            "-map", "[vout]", "-map", f"{audio_idx}:a"]
+    cmd += venc + [
+        "-b:v", f"{bitrate_k}k", "-maxrate", f"{bitrate_k}k",
+        "-bufsize", f"{bitrate_k * 2}k",
+        "-g", str(fps * 2), "-r", str(fps),
+        "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+    ]
+    if duration:
+        cmd += ["-t", duration]
+
+    # -- destination -------------------------------------------------------
+    override = env("OUTPUT_OVERRIDE")
+    if override:
+        out = ["-f", "null", "-"] if override == "null" \
+            else ["-f", "flv", override] if override.startswith("rtmp") \
+            else ["-y", override]
+    else:
+        key = env(f"SHEET_{sheet}_KEY")
+        if not key:
+            print(f"streamer-compose: no stream key for sheet {sheet} — "
+                  f"set SHEET_{sheet}_KEY in /etc/streamer/secrets.env, "
+                  "then systemctl restart streamer@" + str(sheet),
+                  file=sys.stderr)
+            sys.exit(EX_CONFIG)
+        dest = env("DEST_URL", required=True).rstrip("/")
+        out = ["-f", "flv", f"{dest}/{key}"]
+    cmd += out
+
+    print("streamer-compose: sheet", sheet, "->",
+          " ".join(c if not c.startswith("rtmp") else "rtmp://…<key>"
+                   for c in cmd), flush=True)
+    os.execvp(cmd[0], cmd)
+
+
+if __name__ == "__main__":
+    main()

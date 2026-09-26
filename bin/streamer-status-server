@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""streamer-status-server — one plain page saying whether the box is well.
+
+Serves http://<box>:8080/ on the club LAN. No accounts: being on the LAN
+is the credential, same spirit as the tablet URL. Standard library only.
+
+Shows, per sheet: the compositor unit, the scorebug FIFO, and camera
+reachability (TCP :554, cached briefly so a page refresh never hammers
+2014-era cameras). Plus the MediaMTX and renderer units. Every state is
+a colour AND an icon AND a word — colour never carries meaning alone.
+"""
+
+import http.server
+import json
+import os
+import socket
+import subprocess
+import time
+
+ETC = os.environ.get("STREAMER_ETC", "/etc/streamer")
+PORT = int(os.environ.get("STATUS_PORT", "8080"))
+CACHE_S = 10
+
+_cache = {}
+
+
+def cached(key, fn):
+    now = time.time()
+    hit = _cache.get(key)
+    if hit and now - hit[0] < CACHE_S:
+        return hit[1]
+    val = fn()
+    _cache[key] = (now, val)
+    return val
+
+
+def unit_state(unit):
+    try:
+        out = subprocess.run(["systemctl", "is-active", unit],
+                             capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def tcp_ok(host, port=554):
+    try:
+        with socket.create_connection((host, port), timeout=1.5):
+            return True
+    except OSError:
+        return False
+
+
+def load_config():
+    try:
+        with open(os.path.join(ETC, "status.json")) as f:
+            return json.load(f)
+    except Exception:
+        return {"club": "?", "sheets": [], "counter_server": None}
+
+
+GOOD, BAD, WARN = ("#3a9d5d", "#d03b3b", "#eda100")
+
+
+def dot(ok, good="OK", bad="DOWN", maybe=None):
+    if maybe is not None and ok == "maybe":
+        return (f'<span style="color:{WARN}">&#9650;</span> '
+                f'<span class="lbl">{maybe}</span>')
+    if ok:
+        return (f'<span style="color:{GOOD}">&#9679;</span> '
+                f'<span class="lbl">{good}</span>')
+    return (f'<span style="color:{BAD}">&#9632;</span> '
+            f'<span class="lbl">{bad}</span>')
+
+
+def render():
+    cfg = load_config()
+    club = cfg.get("club", "?")
+    rows = []
+    for s in cfg.get("sheets", []):
+        n = s["n"]
+        unit = cached(f"u{n}", lambda n=n: unit_state(f"streamer@{n}"))
+        fifo = os.path.exists(f"/run/counter/bug-{n:02d}.fifo")
+        cams = []
+        for role, host in sorted(s.get("cameras", {}).items()):
+            ok = cached(f"c{host}", lambda h=host: tcp_ok(h))
+            cams.append(f"{role} {dot(ok, 'reachable', 'unreachable')}")
+        rows.append(
+            f"<tr><td>Sheet {n}</td>"
+            f"<td>{dot(unit == 'active', 'streaming', unit)}</td>"
+            f"<td>{dot(fifo, 'present', 'missing')}</td>"
+            f"<td>{' &nbsp; '.join(cams) or '—'}</td></tr>")
+
+    mtx = cached("mtx", lambda: unit_state("streamer-mediamtx"))
+    rend = cached("rend", lambda: unit_state("streamer-renderer"))
+    has_bug = bool(cfg.get("counter_server"))
+    services = (
+        f"MediaMTX {dot(mtx == 'active', 'running', mtx)} &nbsp;&nbsp; "
+        + (f"Scorebug renderer {dot(rend == 'active', 'running', rend)}"
+           if has_bug else "Scorebug: not configured"))
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="10">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{club} — stream status</title>
+<style>
+ body {{ background:#0d0d0d; color:#fff; margin:0; padding:24px;
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto,
+        Helvetica, Arial, sans-serif; }}
+ h1 {{ font-size:22px; margin:0 0 4px; }}
+ .sub {{ color:#898781; margin-bottom:20px; }}
+ table {{ border-collapse:collapse; width:100%; max-width:900px;
+         background:#1a1a19; }}
+ th, td {{ text-align:left; padding:12px 16px; font-size:16px;
+          border-bottom:1px solid #2c2c2a; }}
+ th {{ color:#c3c2b7; font-weight:600; }}
+ .lbl {{ color:#c3c2b7; }}
+ .svc {{ margin:18px 0; font-size:16px; }}
+</style></head><body>
+<h1>{club} — stream status</h1>
+<div class="sub">refreshes every 10&nbsp;s &middot;
+{time.strftime('%H:%M:%S')}</div>
+<div class="svc">{services}</div>
+<table>
+<tr><th>Sheet</th><th>Stream</th><th>Scorebug pipe</th><th>Cameras</th></tr>
+{''.join(rows)}
+</table>
+</body></html>"""
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.startswith("/status.json"):
+            body = json.dumps(load_config()).encode()
+            ctype = "application/json"
+        else:
+            body = render().encode()
+            ctype = "text/html; charset=utf-8"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+if __name__ == "__main__":
+    http.server.ThreadingHTTPServer(("", PORT), Handler).serve_forever()
