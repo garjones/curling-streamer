@@ -66,11 +66,11 @@ install -m 644 "${HERE}"/systemd/*.service /etc/systemd/system/
 install -d -m 755 /etc/streamer
 [ -f /etc/streamer/club.yaml ] || \
     install -m 644 "${HERE}/club.example.yaml" /etc/streamer/club.example.yaml
-if [ ! -f /etc/streamer/secrets.env ]; then
-    install -m 600 -o root -g streamer "${HERE}/secrets.example.env" \
-        /etc/streamer/secrets.env
-    chmod 640 /etc/streamer/secrets.env
-fi
+# 600 root:root — systemd reads EnvironmentFile as root before dropping to
+# the streamer user, so nothing else needs to read it (an earlier 640
+# root:streamer contradicted the docs and made streamer-generate warn).
+[ -f /etc/streamer/secrets.env ] || \
+    install -m 600 -o root -g root "${HERE}/secrets.example.env" /etc/streamer/secrets.env
 touch /etc/streamer/renderer.env
 
 systemctl daemon-reload
