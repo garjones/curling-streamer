@@ -19,6 +19,7 @@ plain files a human can read. No daemon, no state.
 """
 
 import argparse
+import grp
 import json
 import os
 import re
@@ -32,6 +33,7 @@ except ImportError:
              "(apt-get install python3-yaml)")
 
 BUG_W, BUG_H = 640, 360          # fixed by counter's scorebug contract
+SERVICE_GROUP = "streamer"       # the group every systemd unit runs as
 
 # Layout presets. Tiles are fractions of the canvas; the scorebug tile is
 # scaled only if the slot differs from 640x360 (at 1920x1080 it is native).
@@ -215,7 +217,18 @@ def main():
     mtx_path = os.path.join(etc, "mediamtx.yml")
     with open(mtx_path, "w") as f:
         yaml.safe_dump(mediamtx, f, sort_keys=False)
+    # 640 keeps the camera password from other users, but streamer-mediamtx
+    # runs as the unprivileged service user, so the file must belong to its
+    # group — root:root 640 (what a plain chmod leaves when run via sudo)
+    # made MediaMTX unable to read its own config. Found in the 26 Sep 2026
+    # check, before any hardware existed.
     os.chmod(mtx_path, 0o640)
+    if os.geteuid() == 0:
+        try:
+            os.chown(mtx_path, 0, grp.getgrnam(SERVICE_GROUP).gr_gid)
+        except KeyError:
+            warn(f"group '{SERVICE_GROUP}' does not exist — run install.sh; "
+                 f"until then streamer-mediamtx cannot read {mtx_path}")
 
     # ---- per-sheet env files, read by streamer@N.service ----------------
     for n in selected:
@@ -249,8 +262,8 @@ def main():
             for k, v in lines.items():
                 f.write(f"{k}={v}\n")
         os.chmod(env_path, 0o644)
-        if f"SHEET_{n}_KEY" not in secrets:
-            warn(f"sheet {n}: SHEET_{n}_KEY missing from secrets.env — "
+        if not secrets.get(f"SHEET_{n}_KEY"):
+            warn(f"sheet {n}: SHEET_{n}_KEY missing or blank in secrets.env — "
                  f"streamer@{n} will refuse to start until it is set")
 
     # ---- what the status page watches -----------------------------------
