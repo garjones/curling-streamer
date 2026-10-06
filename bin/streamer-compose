@@ -60,7 +60,10 @@ def main():
     inputs = []                   # (label, extra per-input args, url)
 
     def rtsp_input(url):
-        args = ["-rtsp_transport", "tcp"]
+        # A camera that stops sending (unplugged, rebooting) must not stall
+        # the whole graph for ever: give up after 10 s of socket silence so
+        # the input ends and the unit restarts (see overlay() below).
+        args = ["-rtsp_transport", "tcp", "-timeout", "10000000"]
         if listen:
             args = ["-rtsp_flags", "listen"] + args
         return args + ["-i", url]
@@ -69,9 +72,17 @@ def main():
     chain = "base"
     idx = 0
 
-    def overlay(src_label, x, y, out_label):
+    def overlay(src_label, x, y, out_label, live=True):
+        # eof_action=endall: when a LIVE input ends (camera gone, renderer
+        # restarted), end the output so ffmpeg exits and systemd restarts
+        # the unit, which reconnects. The default (repeat) kept the last
+        # frame for the rest of the broadcast with the unit still "active"
+        # — proved by tools/demo_dropout.sh on 6 Oct 2026. The static
+        # sponsor image never ends, so it keeps the default.
         nonlocal chain
-        filters.append(f"[{chain}][{src_label}]overlay={x}:{y}[{out_label}]")
+        eof = ":eof_action=endall" if live else ""
+        filters.append(
+            f"[{chain}][{src_label}]overlay={x}:{y}{eof}[{out_label}]")
         chain = out_label
 
     # -- home / hero -------------------------------------------------------
@@ -123,7 +134,8 @@ def main():
         cmd += ["-loop", "1", "-framerate", "1", "-i", sponsor]
         filters.append(
             f"[{idx}:v]scale={env('RAIL_W','1920')}:{env('RAIL_H','360')}[rail]")
-        overlay("rail", env("RAIL_X", "0"), env("RAIL_Y", "720"), "v4")
+        overlay("rail", env("RAIL_X", "0"), env("RAIL_Y", "720"), "v4",
+                live=False)
         idx += 1
 
     # -- silent audio ------------------------------------------------------
