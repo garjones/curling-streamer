@@ -59,11 +59,10 @@ does not exist. Paste the key from the club password manager:
 or re-run bootstrap.sh, which asks for it."
     command -v age >/dev/null 2>&1 || die "age is not installed (apt-get install age)"
     umask 077
-    if ! age -d -i "$KEY" -o "$ETC/secrets.env.new" "$SRC/secrets.env.age" 2>"$ETC/.age-err"; then
+    if ! err=$(age -d -i "$KEY" -o "$ETC/secrets.env.new" "$SRC/secrets.env.age" 2>&1); then
         rm -f "$ETC/secrets.env.new"
-        die "could not decrypt $SRC/secrets.env.age with $KEY — wrong machine key for this club? ($(tr '\n' ' ' < "$ETC/.age-err"))"
+        die "could not decrypt $SRC/secrets.env.age with $KEY — wrong machine key for this club? ($(printf '%s' "$err" | tr '\n' ' '))"
     fi
-    rm -f "$ETC/.age-err"
     mv -f "$ETC/secrets.env.new" "$ETC/secrets.env"
     umask 022
     echo "secrets.env: decrypted from the club repo"
