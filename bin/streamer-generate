@@ -112,12 +112,16 @@ def parse_sheet_selector(spec, available):
     if not spec:
         return available
     chosen = set()
-    for part in spec.split(","):
-        if "-" in part:
-            lo, hi = part.split("-", 1)
-            chosen.update(range(int(lo), int(hi) + 1))
-        else:
-            chosen.add(int(part))
+    try:
+        for part in spec.split(","):
+            if "-" in part:
+                lo, hi = part.split("-", 1)
+                chosen.update(range(int(lo), int(hi) + 1))
+            else:
+                chosen.add(int(part))
+    except ValueError:
+        die(f"--sheets '{spec}' is not a list of sheet numbers "
+            "(examples: 1-6, 2,4,9)")
     missing = chosen - set(available)
     if missing:
         die(f"--sheets asks for {sorted(missing)} but club.yaml only "
