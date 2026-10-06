@@ -81,6 +81,13 @@ Either way: say what you could not run rather than faking a result.
   compositor, encodes 12 s with x264, and **proves a mid-stream scorebug
   change travelled through the FIFO** by diffing an early and a late
   frame. It must print `PASS`. A failure here is a real defect.
+- `MEDIAMTX=/path/to/mediamtx ./tools/demo_dropout.sh` — same topology;
+  kills the home camera, then the scorebug writer, mid-stream and
+  requires the compositor to **exit within 20 s** each time (systemd
+  restarts it in production). Must print `PASS` twice.
+- Both refuse to run if something else holds :8554 — on the laptop a
+  Homebrew `mediamtx` service may (`brew services list`). Do not stop
+  it; run with `DEMO_RTSP_PORT=8560` and say so in the report.
 
 ### D. Hardware bench (only on a real Intel-GPU box)
 - `./tools/bench.sh --sheets 6 --encoder vaapi` (add `--real` to use the
@@ -103,7 +110,13 @@ Confirm the non-negotiables actually hold in the code, not just the docs:
   them). The destination URL is assembled inside `streamer-compose`.
 - **Honest failure.** `streamer@.service` uses `Restart=always` with
   `RestartPreventExitStatus=78` so a missing key parks the unit with a
-  readable status instead of a restart loop.
+  readable status instead of a restart loop. Every *live* overlay in
+  `streamer-compose` (cameras, scorebug) carries `eof_action=endall` so
+  a lost input ends ffmpeg and the restart reconnects it; the default
+  `repeat` is a frozen tile with a green status page.
+- **No scorebug, no renderer.** With `counter_server` absent,
+  `streamer-generate` must leave `renderer.env` **empty** (zero bytes):
+  `streamer-renderer.service` keys on `ConditionFileNotEmpty`.
 - **README ↔ code.** Spot-check that README claims match the code
   (layout maths, the FIFO contract, the pinned MediaMTX version and its
   sha256 in `install.sh`).

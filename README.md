@@ -106,7 +106,12 @@ date, box, encoder and speeds in the deployment notes.
 
 `tools/demo_stack.sh` is the smaller cousin: proves RTSP in → composite
 out → live FIFO change on any machine, no GPU, in ~20 seconds. Run it
-whenever you doubt the plumbing.
+whenever you doubt the plumbing. `tools/demo_dropout.sh` then takes a
+camera and the scorebug writer away mid-stream and proves the compositor
+exits (so systemd can restart it) instead of freezing. Both start their
+own MediaMTX on :8554 and refuse to run if something else holds the port
+(set `DEMO_RTSP_PORT` to a free one) — a demo that quietly used some
+other server's streams would prove nothing.
 
 ## YouTube notes (verified Aug 2026 — see HANDOFF.md §3.3)
 
@@ -126,8 +131,16 @@ survive. Keys go in `secrets.env` only.
   never forces that.
 - A missing stream key parks the unit with a readable message instead
   of a restart loop (`RestartPreventExitStatus=78`).
-- Network gone? Streams freeze (renderer repeats the last scorebug
-  frame) rather than break, and recover on their own.
+- Club link gone? The scorebug freezes on its last score (the renderer
+  keeps repeating the frame) and catches up when the link returns; the
+  cameras are local, so the picture never stops.
+- A camera gone, or the renderer restarted? The compositor **exits** and
+  systemd restarts it 5 s later, reconnected. That is a short blip on
+  the broadcast, which is why auto-stop must be off (YouTube notes).
+  Until 6 Oct 2026 this README claimed streams "recover on their own";
+  they did not — the overlay kept the tile's last frame for the rest of
+  the broadcast with the unit still `active` and the status page green.
+  `tools/demo_dropout.sh` now proves the restart.
 
 ## Decisions taken while building (flagged, not asked)
 
@@ -139,7 +152,14 @@ survive. Keys go in `secrets.env` only.
   graph first; if the bench says the CPU is the bottleneck, VAAPI
   scaling is the next lever.
 - **MediaMTX pinned to v1.19.1** (sha256 in `install.sh`), RTSP only,
-  every other protocol and its API switched off.
+  every other protocol and its API switched off — including MoQ, which
+  that version turns on by default and which tried to write a
+  certificate into the read-only working directory (6 Oct 2026).
+- **A lost input ends the compositor.** Every live overlay (cameras,
+  scorebug) uses `eof_action=endall`, and RTSP reads time out after
+  10 s of silence, so a dead input makes ffmpeg exit and `Restart=always`
+  reconnects it. The alternative — repeating the last frame — looked
+  like resilience and was a frozen tile nobody would notice.
 - **`sourceOnDemand: true`** — a camera is pulled only while something
   is reading it.
 - Camera credentials do end up inside generated `/etc/streamer/
