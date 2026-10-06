@@ -206,11 +206,17 @@ def main():
         "logLevel": "info",
         "api": False,
         "metrics": False,
+        "pprof": False,
         "playback": False,
         "rtmp": False,
         "hls": False,
         "webrtc": False,
         "srt": False,
+        # MoQ is on by default since MediaMTX v1.16 and wants to write a
+        # self-signed certificate into the working directory, which the
+        # unit's ProtectSystem=strict forbids: two warnings per start and
+        # an unwanted listener on :8892. Found 6 Oct 2026.
+        "moq": False,
         "paths": paths,
     }
     os.makedirs(etc, exist_ok=True)
