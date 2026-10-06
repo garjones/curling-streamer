@@ -41,8 +41,9 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 COMPOSE="${HERE}/bin/streamer-compose"
 [ -x /usr/local/bin/streamer-compose ] && COMPOSE=/usr/local/bin/streamer-compose
 MTX="${MEDIAMTX:-/usr/local/bin/mediamtx}"
+PORT="${DEMO_RTSP_PORT:-8554}"      # synthetic mode only; --real uses the box's own
 WORK="$(mktemp -d /tmp/streamer-bench.XXXXXX)"
-trap 'kill $(cat "${WORK}"/*.pid 2>/dev/null) 2>/dev/null; rm -rf "${WORK}"' EXIT
+trap 'kill $(cat "${WORK}"/*.pid 2>/dev/null) 2>/dev/null; wait 2>/dev/null; rm -rf "${WORK}"' EXIT
 
 echo "bench: ${SHEETS} channels, encoder=${ENCODER}, ${DURATION}s"
 
@@ -59,12 +60,22 @@ rtmp: false
 hls: false
 webrtc: false
 srt: false
+moq: false
+rtspAddress: :${PORT}
+rtspTransports: [tcp]
 paths:
   all_others:
 EOF
     "${MTX}" "${WORK}/mtx.yml" >"${WORK}/mtx.log" 2>&1 &
     echo $! > "${WORK}/mtx.pid"
     sleep 1
+    # Ours must be the one listening, or the bench measures some other
+    # server's streams (same check as demo_stack.sh).
+    kill -0 "$(cat "${WORK}/mtx.pid")" 2>/dev/null || {
+        echo "bench: FAIL — our mediamtx did not start (is something else on :${PORT}?"
+        echo "       stop it, or set DEMO_RTSP_PORT to a free port); its log:"
+        cat "${WORK}/mtx.log"; exit 1
+    }
     i=1
     while [ "${i}" -le "${SHEETS}" ]; do
         for role in home away; do
@@ -73,13 +84,13 @@ EOF
                 -c:v libx264 -preset ultrafast -tune zerolatency \
                 -b:v 2000k -g 60 -pix_fmt yuv420p \
                 -f rtsp -rtsp_transport tcp \
-                "rtsp://127.0.0.1:8554/cam-${i}-${role}" \
+                "rtsp://127.0.0.1:${PORT}/cam-${i}-${role}" \
                 >"${WORK}/pub-${i}-${role}.log" 2>&1 &
             echo $! >> "${WORK}/pubs.pid"
         done
         i=$((i+1))
     done
-    RTSP_BASE="rtsp://127.0.0.1:8554"
+    RTSP_BASE="rtsp://127.0.0.1:${PORT}"
     sleep 2
 fi
 
