@@ -7,8 +7,10 @@ Wants=streamer-mediamtx.service
 [Service]
 User=streamer
 Group=streamer
-# GPU access for VAAPI/QSV encoding
-SupplementaryGroups=video render
+# GPU access (/dev/dri/renderD128) comes from the streamer user's own
+# video/render group membership, which install.sh sets up — a
+# SupplementaryGroups= line here would fail the unit outright on a box
+# without a "render" group, where install.sh deliberately tolerates it.
 EnvironmentFile=/etc/streamer/sheet-%i.env
 # Stream keys and camera credentials. Keys stay OUT of the command line so
 # they never leak into ps or the journal; ffmpeg receives the URL via exec.
