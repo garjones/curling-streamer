@@ -2,7 +2,7 @@
 # demo_dropout.sh — prove that a lost input RESTARTS the compositor rather
 # than freezing the stream.
 #
-#   tools/demo_dropout.sh [--keep]
+#   tools/demo_dropout.sh [--keep]          (DEMO_ENCODER=vaapi on the box)
 #
 # Same topology as demo_stack.sh (MediaMTX, two synthetic cameras, a
 # scorebug FIFO, one x264 compositor), then, mid-stream, it takes away
@@ -25,6 +25,9 @@ MTX="${MEDIAMTX:-/usr/local/bin/mediamtx}"
 [ -x "${MTX}" ] || MTX="${HERE}/vendor/mediamtx"
 [ -x "${MTX}" ] || { echo "dropout: mediamtx not found (set MEDIAMTX=...)"; exit 1; }
 PORT="${DEMO_RTSP_PORT:-8554}"
+# DEMO_ENCODER=vaapi runs the GPU graph (overlay_vaapi eof_action) on the
+# encoder box itself — the production path, which is what must exit.
+ENCODER="${DEMO_ENCODER:-x264}"
 RTSP="rtsp://127.0.0.1:${PORT}"
 GRACE=20     # seconds the compositor is allowed to take to notice and exit
 WORK="$(mktemp -d /tmp/streamer-dropout.XXXXXX)"
@@ -94,7 +97,7 @@ ffmpeg -hide_banner -loglevel error -f lavfi \
 [ -s "${WORK}/rail.png" ] || { echo "dropout: FAIL — could not make rail.png"; exit 1; }
 
 start_compositor() {   # prints the pid; runs up to 60 s unless an input ends
-    env SHEET=1 FPS=30 CANVAS_W=1920 CANVAS_H=1080 BITRATE_K=4500 ENCODER=x264 \
+    env SHEET=1 FPS=30 CANVAS_W=1920 CANVAS_H=1080 BITRATE_K=4500 ENCODER="${ENCODER}" \
         HOME_URL="${RTSP}/cam-1-home" HERO_X=0 HERO_Y=0 HERO_W=1280 HERO_H=720 \
         AWAY_URL="${RTSP}/cam-1-away" AWAY_X=1280 AWAY_Y=0 AWAY_W=640 AWAY_H=360 \
         FIFO="${WORK}/bug-01.fifo" BUG_X=1280 BUG_Y=360 BUG_W=640 BUG_H=360 \
