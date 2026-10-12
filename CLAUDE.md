@@ -94,7 +94,9 @@ Either way: say what you could not run rather than faking a result.
 ### D. Hardware bench (only on a real Intel-GPU box)
 - `./tools/bench.sh --sheets 6 --encoder vaapi` (add `--real` to use the
   club's cameras). This is the gate before any club buys hardware: every
-  channel must hold `>= 1.00x` (aim `>= 1.3x`). It cannot run in a
+  channel must pass the bench's own bar — ≥ (1 − 3 s/duration) with
+  **zero dropped frames**; a live pipeline cannot exceed 1.0x, so do
+  not read ~0.98x as a failure. It cannot run in a
   sandbox — report it as not-run, do not fake a result.
 
 ### E. Design-conformance review (read and reason)

@@ -13,8 +13,11 @@
 # The A380's published margin (478 fps at 1080p H.264, 2.66x for six
 # channels) is an ENCODE-ONLY number. This runs N complete channels —
 # 2x RTSP decode + scale + overlay + scorebug FIFO + encode — and reports
-# each channel's ffmpeg speed. Every channel must hold speed >= 1.00x
-# with headroom (aim >= 1.3x); anything less means fewer sheets per box.
+# each channel's ffmpeg speed and dropped-frame count. A live pipeline
+# cannot exceed 1.0x (output follows input); keeping up reads as ~0.97-
+# 0.99 over 60 s because startup counts as wall time. PASS = every
+# channel >= (1 - 3s/DURATION) AND zero dropped frames. Use --duration
+# 300 for a tighter bar; anything failing means fewer sheets per box.
 #
 # Default mode is fully synthetic: a local MediaMTX receives 2N test-card
 # publishers and the N compositors pull from it, exactly the production
@@ -179,26 +182,48 @@ done
 wait $(cat "${WORK}/chan.pid") || true
 
 echo
-echo "bench results (${SHEETS} channels, ${ENCODER}, source ${SRC}, canvas ${CANVAS}):"
+echo "bench results (${SHEETS} channels, ${ENCODER}, source ${SRC}, canvas ${CANVAS}, ${DURATION}s):"
+# How to read a LIVE pipeline (learned the hard way, 12 Oct 2026):
+#  - speed cannot exceed 1.0x: output is produced no faster than frames
+#    arrive. A channel that keeps up reads slightly UNDER 1.0, because
+#    connecting, probing and filling the first buffers count as wall time
+#    but produce no output. Short runs read lower; longer runs converge
+#    on 1.0. So the bar is 1.0 minus a startup allowance over the run.
+#  - a channel that is genuinely too slow must DROP frames to hold its
+#    30 fps output clock, and ffmpeg prints drop=N. Zero drops is the
+#    real proof of keeping up; speed alone is not.
+# Startup allowance: 3 s. 60 s run -> bar 0.95x; 300 s run -> 0.99x.
+bar=$(awk -v d="${DURATION}" 'BEGIN { printf "%.3f", 1 - 3 / d }')
 fail=0
 i=1
 while [ "${i}" -le "${SHEETS}" ]; do
-    speed=$(grep -o 'speed=[0-9.]*x' "${WORK}/ch-${i}.log" | tail -1)
-    [ -n "${speed}" ] || { speed="NO RESULT — see ${WORK}/ch-${i}.log"; fail=1; }
-    case "${speed}" in
-        speed=0.*) fail=1;;
-    esac
-    echo "  channel ${i}: ${speed}"
+    last=$(grep -o 'frame=.*speed=[0-9.]*x' "${WORK}/ch-${i}.log" | tail -1)
+    speed=$(printf '%s' "${last}" | grep -o 'speed=[0-9.]*x' | sed 's/speed=//;s/x//')
+    drops=$(printf '%s' "${last}" | grep -o 'drop=[0-9]*' | sed 's/drop=//')
+    dups=$(printf '%s' "${last}" | grep -o 'dup=[0-9]*' | sed 's/dup=//')
+    : "${drops:=0}" "${dups:=0}"
+    if [ -z "${speed}" ]; then
+        echo "  channel ${i}: NO RESULT (stalled or killed) — see ${WORK}/ch-${i}.log"
+        fail=1
+    else
+        ok=$(awk -v s="${speed}" -v b="${bar}" -v dr="${drops}" \
+             'BEGIN { print (s + 0 >= b + 0 && dr + 0 == 0) ? "ok" : "bad" }')
+        verdict="ok"
+        [ "${ok}" = ok ] || { verdict="BELOW BAR"; fail=1; }
+        echo "  channel ${i}: speed=${speed}x  drops=${drops}  dups=${dups}  ${verdict}"
+    fi
     i=$((i+1))
 done
 echo
 if [ "${fail}" = 1 ]; then
-    echo "VERDICT: FAIL — at least one channel below realtime (or no"
-    echo "result). Fewer sheets per box, a faster encoder path, or a"
-    echo "lower canvas. Logs kept in ${WORK} (trap disabled on fail)."
+    echo "VERDICT: FAIL — a channel is below ${bar}x, dropped frames, or"
+    echo "gave no result. Fewer sheets per box, a faster path, or a lower"
+    echo "canvas. Logs kept in ${WORK} (trap disabled on fail)."
     trap - EXIT
     kill $(cat "${WORK}"/*.pid 2>/dev/null) 2>/dev/null || true
     exit 1
 fi
-echo "VERDICT: PASS if every channel is comfortably >= 1.00x (aim 1.3x)."
-echo "Record date, box, encoder and speeds in the deployment notes."
+echo "VERDICT: PASS — every channel >= ${bar}x with zero dropped frames."
+echo "(Bar = 1.0 minus a 3 s startup allowance over ${DURATION} s; a live"
+echo "pipeline cannot exceed 1.0x. Longer runs sit closer to 1.0.)"
+echo "Record date, box, encoder, canvas and speeds in the deployment notes."

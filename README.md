@@ -102,7 +102,11 @@ tools/bench.sh --sheets 6 --encoder vaapi          # synthetic sources
 tools/bench.sh --sheets 6 --encoder vaapi --real   # the club's cameras
 ```
 
-Every channel must hold ≥ 1.00× (aim ≥ 1.3×). Note that pre-10th-gen
+A live pipeline cannot exceed 1.0× — output follows input — so a
+channel that keeps up reads ~0.97–0.99× over 60 s (startup counts as
+wall time). The bench passes a channel at ≥ (1 − 3 s/duration) **with
+zero dropped frames**; drops are the real sign of falling behind.
+`--duration 300` tightens the bar. Note that pre-10th-gen
 refurb boards have no Resizable BAR; the media engine is believed to be
 largely indifferent but the bench, not the belief, is the gate. Record
 date, box, encoder and speeds in the deployment notes.
@@ -184,11 +188,22 @@ survive. Keys go in `secrets.env` only.
   mediamtx.yml` (mode 640): MediaMTX cannot read per-path secrets from
   env files. Config lives outside any repo; acceptable, documented.
 
+## Tested on hardware (12 Oct 2026, pilot box: i7-6700 + Arc A380)
+
+The full GPU graph — VAAPI decode, `scale_vaapi`, `pad_vaapi`, three
+`overlay_vaapi`, `h264_vaapi` — plus the FIFO scorebug, sponsor rail and
+silent audio: **six channels at 1280×720, every one ≥0.965× with zero
+dropped frames**, compositors ~25% CPU each, GPU engines barely warm.
+That is six sheets per box on refurbished hardware, with headroom. The
+day's wrong turns (VPP pixels, pad cost, FIFO starvation, camera clock
+skew — all tested and ruled out) and the real cause (audio/video clock
+offset, fixed with `setpts=PTS-STARTPTS`) are in the git log and the
+comments in `streamer-compose`.
+
 ## Not yet tested (honestly)
 
-Real cameras, a real Intel GPU (VAAPI path is untestable in the build
-container — `x264` is what the demo proves), QSV, actual YouTube ingest,
-and the renderer against a live club (it is verbatim counter code, but
-this box's systemd wrapping of it is new). First hardware day: run
-`tools/demo_stack.sh`, then `tools/bench.sh --encoder vaapi`, then one
-real camera end to end.
+Real cameras (synthetic 854×480 test cards so far — run `tools/bench.sh
+--real` at the club), QSV, actual YouTube ingest, a 1920×1080 canvas on
+the fixed graph (likely fine now; untested), and the renderer against a
+live club (it is verbatim counter code, but this box's systemd wrapping
+of it is new).
