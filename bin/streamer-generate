@@ -159,6 +159,17 @@ def main():
     encoder = club.get("encoder", "vaapi")
     if encoder not in ("vaapi", "qsv", "x264"):
         die(f"club.yaml: encoder '{encoder}' must be vaapi, qsv or x264")
+    # Where scaling and compositing happen. gpu keeps every frame on the
+    # GPU (VAAPI decode -> scale_vaapi -> overlay_vaapi -> encode) and is
+    # what makes six sheets fit on one box; cpu is the software fallback
+    # for drivers where the VAAPI filters misbehave. See streamer-compose.
+    filtering = str(club.get("filtering", "gpu" if encoder == "vaapi" else "cpu"))
+    if filtering not in ("gpu", "cpu"):
+        die(f"club.yaml: filtering '{filtering}' must be gpu or cpu")
+    if filtering == "gpu" and encoder != "vaapi":
+        warn(f"filtering: gpu needs encoder: vaapi (this club uses "
+             f"{encoder}) — filtering on the CPU instead")
+        filtering = "cpu"
     layout = club.get("layout", "hero-away-bug-rail")
     counter_server = club.get("counter_server")  # None => no scorebug
     sponsor = club.get("sponsor_image")          # None => no rail
@@ -249,6 +260,7 @@ def main():
             "CANVAS_W": canvas_w, "CANVAS_H": canvas_h,
             "FPS": fps, "BITRATE_K": bitrate_k,
             "ENCODER": encoder, "VAAPI_DEVICE": vaapi_device,
+            "FILTER_MODE": filtering,
             "HOME_URL": f"{rtsp_base}/cam-{n}-home",
             "HERO_X": hx, "HERO_Y": hy, "HERO_W": hw, "HERO_H": hh,
             "DEST_URL": dest_default,
@@ -300,7 +312,8 @@ def main():
 
     print(f"streamer-generate: wrote config for sheets "
           f"{','.join(str(n) for n in selected)} "
-          f"({layout} @ {canvas}, {encoder}, {fps} fps, {bitrate_k}k)")
+          f"({layout} @ {canvas}, {encoder}/{filtering}, {fps} fps, "
+          f"{bitrate_k}k)")
     print("apply with: systemctl restart streamer-mediamtx "
           "streamer-renderer 'streamer@*'")
 

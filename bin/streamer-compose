@@ -14,6 +14,23 @@ Inputs (in order, only those configured):
   3  sponsor rail  a static image (rotation is a TODO — see README)
   +  silence       anullsrc; YouTube wants an audio track
 
+GPU vs CPU filtering (FILTER_MODE, default gpu when ENCODER=vaapi):
+
+  gpu  Decode, scale and composite all happen on the GPU: VAAPI hardware
+       decode of the cameras, scale_vaapi for the tiles, overlay_vaapi
+       onto a GPU canvas, then h264_vaapi. Frames never enter system
+       memory, so the CPU does almost nothing per channel.
+  cpu  The original graph: software decode, swscale, software overlay,
+       then one hwupload per frame into the encoder. Kept as a fallback
+       for drivers where the VAAPI filters misbehave.
+
+Why gpu is the default: measured on the pilot box (i7-6700 + Arc A380,
+12 Oct 2026) the cpu graph cost ~2 CPU cores *per channel* — two channels
+pegged a 4-core machine at 1.06x realtime and six channels managed only
+0.68x, while the Arc sat nearly idle doing just the encode. The work is
+pixel shuffling, which is what the GPU is for. Re-bench after changing
+this (tools/bench.sh).
+
 Exit code 78 (EX_CONFIG) means "configuration missing, retrying is
 useless" — the unit's RestartPreventExitStatus stops the restart loop so
 `systemctl status streamer@N` shows a plain, human-readable reason.
@@ -44,6 +61,19 @@ def main():
     bitrate_k = int(env("BITRATE_K", "4500"))
     encoder = env("ENCODER", "vaapi")
 
+    # Only the VAAPI encoder can keep frames on the GPU; qsv and x264 must
+    # hand software frames to the encoder, so they always filter on the CPU.
+    filter_mode = env("FILTER_MODE", "gpu" if encoder == "vaapi" else "cpu")
+    if filter_mode not in ("gpu", "cpu"):
+        print(f"streamer-compose: FILTER_MODE '{filter_mode}' must be "
+              "gpu or cpu", file=sys.stderr)
+        sys.exit(EX_CONFIG)
+    gpu = (filter_mode == "gpu" and encoder == "vaapi")
+    if filter_mode == "gpu" and encoder != "vaapi":
+        print(f"streamer-compose: FILTER_MODE=gpu needs ENCODER=vaapi "
+              f"(this sheet uses {encoder}) — filtering on the CPU",
+              file=sys.stderr)
+
     cmd = ["ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "warning"]
 
     # Bench/demo hooks: DURATION caps the run; OUTPUT_OVERRIDE redirects
@@ -57,18 +87,36 @@ def main():
         # output would flood the journal.
         cmd.append("-stats")
 
-    inputs = []                   # (label, extra per-input args, url)
+    # -- hardware device ---------------------------------------------------
+    # gpu mode names the device so both the decoders (-hwaccel_device) and
+    # the filter graph (hwupload, *_vaapi) share one VAAPI context; cpu mode
+    # only needs a device for the final hwupload before the encoder.
+    if encoder == "vaapi":
+        vaapi_device = env("VAAPI_DEVICE", "/dev/dri/renderD128")
+        if gpu:
+            cmd += ["-init_hw_device", f"vaapi=va:{vaapi_device}",
+                    "-filter_hw_device", "va"]
+        else:
+            cmd += ["-vaapi_device", vaapi_device]
 
     def rtsp_input(url):
         # A camera that stops sending (unplugged, rebooting) must not stall
         # the whole graph for ever: give up after 10 s of socket silence so
         # the input ends and the unit restarts (see overlay() below).
         args = ["-rtsp_transport", "tcp", "-timeout", "10000000"]
+        if gpu:
+            # Decode straight into VAAPI surfaces — the frames are never
+            # touched by the CPU from here to the encoder.
+            args = ["-hwaccel", "vaapi", "-hwaccel_device", "va",
+                    "-hwaccel_output_format", "vaapi"] + args
         if listen:
             args = ["-rtsp_flags", "listen"] + args
         return args + ["-i", url]
 
-    filters = [f"color=c=black:size={canvas_w}x{canvas_h}:rate={fps}[base]"]
+    # The canvas every tile is composited onto. In gpu mode it is uploaded
+    # once per frame and overlaid on the GPU.
+    base = f"color=c=black:size={canvas_w}x{canvas_h}:rate={fps}"
+    filters = [f"{base},format=nv12,hwupload[base]" if gpu else f"{base}[base]"]
     chain = "base"
     idx = 0
 
@@ -79,17 +127,40 @@ def main():
         # frame for the rest of the broadcast with the unit still "active"
         # — proved by tools/demo_dropout.sh on 6 Oct 2026. The static
         # sponsor image never ends, so it keeps the default.
+        # overlay_vaapi takes the same framesync options as overlay.
         nonlocal chain
         eof = ":eof_action=endall" if live else ""
-        filters.append(
-            f"[{chain}][{src_label}]overlay={x}:{y}{eof}[{out_label}]")
+        f = (f"overlay_vaapi=x={x}:y={y}{eof}" if gpu
+             else f"overlay={x}:{y}{eof}")
+        filters.append(f"[{chain}][{src_label}]{f}[{out_label}]")
         chain = out_label
+
+    def scale_hw(src, w, h, label):
+        """Scale a camera tile: on the GPU in gpu mode, swscale otherwise."""
+        if gpu:
+            filters.append(
+                f"[{src}:v]scale_vaapi=w={w}:h={h}:format=nv12[{label}]")
+        else:
+            filters.append(f"[{src}:v]scale={w}:{h}[{label}]")
+
+    def upload_tile(src, w, h, label, native):
+        """A CPU-side source (FIFO frame, PNG) made ready to composite.
+
+        These arrive at ~1 fps, so scaling them with swscale costs nothing
+        and keeps the GPU graph to the filters that matter.
+        """
+        if gpu:
+            pre = "" if native else f"scale={w}:{h},"
+            filters.append(f"[{src}:v]{pre}format=nv12,hwupload[{label}]")
+        elif native:
+            filters.append(f"[{src}:v]copy[{label}]")
+        else:
+            filters.append(f"[{src}:v]scale={w}:{h}[{label}]")
 
     # -- home / hero -------------------------------------------------------
     home = env("HOME_URL", required=True)
     cmd += rtsp_input(home)
-    filters.append(
-        f"[{idx}:v]scale={env('HERO_W','1280')}:{env('HERO_H','720')}[hero]")
+    scale_hw(idx, env("HERO_W", "1280"), env("HERO_H", "720"), "hero")
     overlay("hero", env("HERO_X", "0"), env("HERO_Y", "0"), "v1")
     idx += 1
 
@@ -97,8 +168,7 @@ def main():
     away = env("AWAY_URL")
     if away:
         cmd += rtsp_input(away)
-        filters.append(
-            f"[{idx}:v]scale={env('AWAY_W','640')}:{env('AWAY_H','360')}[away]")
+        scale_hw(idx, env("AWAY_W", "640"), env("AWAY_H", "360"), "away")
         overlay("away", env("AWAY_X", "1280"), env("AWAY_Y", "0"), "v2")
         idx += 1
 
@@ -112,10 +182,7 @@ def main():
         cmd += ["-f", "rawvideo", "-pix_fmt", "rgba",
                 "-video_size", "640x360", "-framerate", "1", "-i", fifo]
         bw, bh = env("BUG_W", "640"), env("BUG_H", "360")
-        if (bw, bh) != ("640", "360"):
-            filters.append(f"[{idx}:v]scale={bw}:{bh}[bug]")
-        else:
-            filters.append(f"[{idx}:v]copy[bug]")
+        upload_tile(idx, bw, bh, "bug", native=(bw, bh) == ("640", "360"))
         overlay("bug", env("BUG_X", "1280"), env("BUG_Y", "360"), "v3")
         idx += 1
 
@@ -132,8 +199,8 @@ def main():
                   f"streamer@{sheet}", file=sys.stderr)
             sys.exit(EX_CONFIG)
         cmd += ["-loop", "1", "-framerate", "1", "-i", sponsor]
-        filters.append(
-            f"[{idx}:v]scale={env('RAIL_W','1920')}:{env('RAIL_H','360')}[rail]")
+        upload_tile(idx, env("RAIL_W", "1920"), env("RAIL_H", "360"),
+                    "rail", native=False)
         overlay("rail", env("RAIL_X", "0"), env("RAIL_Y", "720"), "v4",
                 live=False)
         idx += 1
@@ -145,19 +212,23 @@ def main():
 
     # -- encoder -----------------------------------------------------------
     if encoder == "vaapi":
-        cmd = cmd[:2] + ["-vaapi_device",
-                         env("VAAPI_DEVICE", "/dev/dri/renderD128")] + cmd[2:]
-        filters.append(f"[{chain}]format=nv12,hwupload[vout]")
+        if gpu:
+            vout = chain          # already VAAPI surfaces; nothing to upload
+        else:
+            filters.append(f"[{chain}]format=nv12,hwupload[vout]")
+            vout = "vout"
         venc = ["-c:v", "h264_vaapi"]
     elif encoder == "qsv":
         filters.append(f"[{chain}]format=nv12[vout]")
+        vout = "vout"
         venc = ["-c:v", "h264_qsv", "-preset", "medium"]
     else:  # x264 — software fallback, also what the container demo uses
         filters.append(f"[{chain}]format=yuv420p[vout]")
+        vout = "vout"
         venc = ["-c:v", "libx264", "-preset", "veryfast"]
 
     cmd += ["-filter_complex", ";".join(filters),
-            "-map", "[vout]", "-map", f"{audio_idx}:a"]
+            "-map", f"[{vout}]", "-map", f"{audio_idx}:a"]
     cmd += venc + [
         "-b:v", f"{bitrate_k}k", "-maxrate", f"{bitrate_k}k",
         "-bufsize", f"{bitrate_k * 2}k",
@@ -185,7 +256,7 @@ def main():
         out = ["-f", "flv", f"{dest}/{key}"]
     cmd += out
 
-    print("streamer-compose: sheet", sheet, "->",
+    print(f"streamer-compose: sheet {sheet} ({filter_mode} filtering) ->",
           " ".join(c if not c.startswith("rtmp") else "rtmp://…<key>"
                    for c in cmd), flush=True)
     os.execvp(cmd[0], cmd)

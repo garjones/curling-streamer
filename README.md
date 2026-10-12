@@ -148,9 +148,16 @@ survive. Keys go in `secrets.env` only.
   speaks to Arc through the iHD VAAPI driver out of the box, while the
   QSV/oneVPL path wants a newer ffmpeg than stable ships. `encoder:
   qsv` and `x264` exist; the bench decides if VAAPI needs revisiting.
-- **Scaling/overlay run in software**, encode on GPU. Simplest correct
-  graph first; if the bench says the CPU is the bottleneck, VAAPI
-  scaling is the next lever.
+- **Scaling and overlay run on the GPU** (`filtering: gpu`, the
+  default): VAAPI hardware decode → `scale_vaapi` → `overlay_vaapi` →
+  `h264_vaapi`, so a frame never enters system memory. The original
+  software graph is still there as `filtering: cpu`.
+  **Why it changed:** the first bench on the pilot box (i7-6700 + Arc
+  A380, 12 Oct 2026) measured the software graph at **~2 CPU cores per
+  channel** — two channels pegged the 4-core box at 1.06x and six
+  channels managed 0.68x, while the Arc idled doing only the encode.
+  The earlier note here said software filtering was fine until the bench
+  said otherwise; the bench said otherwise.
 - **MediaMTX pinned to v1.19.1** (sha256 in `install.sh`), RTSP only,
   every other protocol and its API switched off — including MoQ, which
   that version turns on by default and which tried to write a

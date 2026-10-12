@@ -11,6 +11,13 @@ counter_server: https://counter.gareth.live   # remove line entirely if you
 canvas: 1920x1080             # output canvas per sheet (1280x720 also fine)
 fps: 30
 bitrate_k: 4500               # video bitrate; ~4.5 Mbps suits 1080p30 sport
+filtering: gpu                # gpu  = decode/scale/composite all on the
+                              #        GPU (needs encoder: vaapi). This is
+                              #        what makes ~6 sheets fit on one box.
+                              # cpu  = software filtering, GPU encode only;
+                              #        fallback if the VAAPI filters
+                              #        misbehave. Costs ~2 CPU cores PER
+                              #        SHEET — measured 12 Oct 2026.
 encoder: vaapi                # vaapi (Intel GPU on Debian — recommended),
                               # qsv (needs a libvpl ffmpeg), or
                               # x264 (CPU only — a few sheets at most)
