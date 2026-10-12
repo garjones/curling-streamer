@@ -103,8 +103,16 @@ def geometry(layout_name, canvas_w, canvas_h):
             tiles[name] = (canvas_w - BUG_W, canvas_h - BUG_H, BUG_W, BUG_H)
             continue
         fx, fy, fw, fh = frac
-        tiles[name] = (round(canvas_w * fx), round(canvas_h * fy),
-                       round(canvas_w * fw), round(canvas_h * fh))
+        # Round to EVEN pixels: nv12 chroma is subsampled 2x2, and the
+        # VAAPI scalers/overlays reject odd sizes and offsets. A 1280x720
+        # canvas would otherwise produce a 853-wide hero and 427-wide
+        # tiles. Tiles still butt together: x+w of the left tile is the
+        # even x of the right one.
+        even = lambda v: int(round(v / 2.0)) * 2
+        x, y = even(canvas_w * fx), even(canvas_h * fy)
+        w = even(canvas_w * (fx + fw)) - x
+        h = even(canvas_h * (fy + fh)) - y
+        tiles[name] = (x, y, w, h)
     return tiles
 
 

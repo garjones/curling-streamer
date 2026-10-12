@@ -2,7 +2,13 @@
 # bench.sh — the bench gate: measure the REAL per-sheet filter graph.
 #
 #   tools/bench.sh [--sheets 6] [--encoder vaapi|qsv|x264] [--duration 60]
-#                  [--source-size 854x480] [--real]
+#                  [--source-size 854x480] [--canvas 1920x1080] [--real]
+#
+# --canvas sets the output size (hero-away-bug-rail layout, same tile
+# maths as streamer-generate). The GPU's video-processing engine cost
+# scales with canvas pixels: 1280x720 is 2.25x cheaper than 1080p, and
+# for 854x480 cameras the hero tile becomes native size instead of a
+# 1.5x upscale.
 #
 # The A380's published margin (478 fps at 1080p H.264, 2.66x for six
 # channels) is an ENCODE-ONLY number. This runs N complete channels —
@@ -25,6 +31,7 @@ SHEETS=6
 ENCODER="${ENCODER:-vaapi}"
 DURATION=60
 SRC=854x480
+CANVAS=1920x1080
 REAL=0
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -32,6 +39,7 @@ while [ $# -gt 0 ]; do
         --encoder)  ENCODER=$2; shift 2;;
         --duration) DURATION=$2; shift 2;;
         --source-size) SRC=$2; shift 2;;
+        --canvas)   CANVAS=$2; shift 2;;
         --real)     REAL=1; shift;;
         *) sed -n '2,20p' "$0"; exit 1;;
     esac
@@ -125,18 +133,29 @@ ffmpeg -hide_banner -loglevel error -f lavfi \
 # Without it a channel whose source dies can sit dropping frames for ever
 # and the bench never returns — seen 12 Oct 2026. A killed channel has no
 # final speed= line and is reported as NO RESULT below.
+# Tile geometry for hero-away-bug-rail at this canvas — the same even-
+# rounded thirds streamer-generate uses, so the bench tests the real
+# layout at any size (odd sizes break VAAPI nv12 surfaces).
+CW=${CANVAS%x*}; CH=${CANVAS#*x}
+ev() { printf '%d' "$(( ( ($1) + 1 ) / 2 * 2 ))"; }
+HX=0; HY=0; HW=$(ev $((CW*2/3))); HH=$(ev $((CH*2/3)))
+AX=$HW; AY=0; AW=$((CW-HW)); AH=$(ev $((CH/3)))
+BX=$HW; BY=$AH; BW=$AW; BH=$((HH-AH))
+RX=0; RY=$HH; RW=$CW; RH=$((CH-HH))
+echo "bench: canvas ${CANVAS} — hero ${HW}x${HH} away ${AW}x${AH} bug ${BW}x${BH} rail ${RW}x${RH}"
+
 echo "bench: starting ${SHEETS} compositors..."
 i=1
 while [ "${i}" -le "${SHEETS}" ]; do
-    env SHEET="${i}" FPS=30 CANVAS_W=1920 CANVAS_H=1080 BITRATE_K=4500 \
+    env SHEET="${i}" FPS=30 CANVAS_W="${CW}" CANVAS_H="${CH}" BITRATE_K=4500 \
         ENCODER="${ENCODER}" \
-        HOME_URL="${RTSP_BASE}/cam-${i}-home" HERO_X=0 HERO_Y=0 \
-        HERO_W=1280 HERO_H=720 \
-        AWAY_URL="${RTSP_BASE}/cam-${i}-away" AWAY_X=1280 AWAY_Y=0 \
-        AWAY_W=640 AWAY_H=360 \
+        HOME_URL="${RTSP_BASE}/cam-${i}-home" HERO_X="${HX}" HERO_Y="${HY}" \
+        HERO_W="${HW}" HERO_H="${HH}" \
+        AWAY_URL="${RTSP_BASE}/cam-${i}-away" AWAY_X="${AX}" AWAY_Y="${AY}" \
+        AWAY_W="${AW}" AWAY_H="${AH}" \
         FIFO="${WORK}/fifo/bug-$(printf %02d "${i}").fifo" \
-        BUG_X=1280 BUG_Y=360 BUG_W=640 BUG_H=360 \
-        SPONSOR="${WORK}/rail.png" RAIL_X=0 RAIL_Y=720 RAIL_W=1920 RAIL_H=360 \
+        BUG_X="${BX}" BUG_Y="${BY}" BUG_W="${BW}" BUG_H="${BH}" \
+        SPONSOR="${WORK}/rail.png" RAIL_X="${RX}" RAIL_Y="${RY}" RAIL_W="${RW}" RAIL_H="${RH}" \
         DURATION="${DURATION}" OUTPUT_OVERRIDE=null \
         timeout -k 10 "$((DURATION + 45))" \
         "${COMPOSE}" >"${WORK}/ch-${i}.log" 2>&1 &
@@ -147,7 +166,7 @@ done
 wait $(cat "${WORK}/chan.pid") || true
 
 echo
-echo "bench results (${SHEETS} channels, ${ENCODER}, source ${SRC}):"
+echo "bench results (${SHEETS} channels, ${ENCODER}, source ${SRC}, canvas ${CANVAS}):"
 fail=0
 i=1
 while [ "${i}" -le "${SHEETS}" ]; do
