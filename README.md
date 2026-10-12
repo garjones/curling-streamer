@@ -63,7 +63,10 @@ the deploy key — one commit and one GitHub setting.
 
 **By hand**, as root: `./install.sh`, then follow its printed
 next-steps (`club.yaml`, `secrets.env`, `streamer-generate --sheets 1-6`,
-enable units, open `:8080`). The installer pins MediaMTX v1.19.1 by
+enable units, open `:8080`). **ffmpeg 5 or newer is required** (Debian 12/13 and Homebrew both
+qualify; Ubuntu 22.04's ffmpeg 4.4 does not — there `-timeout` on an
+RTSP input means *listen* and the compositor tries to become a server;
+found by the 12 Oct 2026 check). The installer pins MediaMTX v1.19.1 by
 SHA-256 and installs the Intel VAAPI driver
 (`intel-media-va-driver-non-free` — needs the `non-free` apt component;
 the iHD driver covers Arc/DG2 and recent iGPUs).

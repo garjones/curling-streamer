@@ -37,7 +37,7 @@ SERVICE_GROUP = "streamer"       # the group every systemd unit runs as
 
 # Layout presets. Tiles are fractions of the canvas; the scorebug tile is
 # scaled only if the slot differs from 640x360 (at 1920x1080 it is native).
-#   hero-away-bug-rail — the KCC Silver layout: hero top-left, away camera
+#   hero-away-bug-rail — two cameras + bug + rail: hero top-left, away camera
 #     top-right, scorebug under it, sponsor rail across the bottom.
 #   full-bug — one camera full-frame, scorebug bottom-right.
 LAYOUTS = {

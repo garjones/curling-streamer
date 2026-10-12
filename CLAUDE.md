@@ -23,7 +23,9 @@ Verification playbook below in order, run what can be run, reason about
 the rest, and finish with a findings report (format at the end). Do not
 change code while checking unless asked — report first.
 
-The runnable checks need `ffmpeg`, `python3` with PyYAML, and a
+The runnable checks need **`ffmpeg` 5 or newer** (4.x breaks the RTSP
+`-timeout` semantics — Ubuntu 22.04 ships 4.4, so run the demo
+elsewhere or install a newer ffmpeg), `python3` with PyYAML, and a
 MediaMTX binary (path in `$MEDIAMTX`). Chromium is **not** needed — the
 demo drives the scorebug FIFO with a synthetic writer, not the live
 renderer. No GPU is needed for the demo; it encodes with x264.

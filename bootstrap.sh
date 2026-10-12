@@ -44,7 +44,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 [ -n "$CLUB" ] && [ -n "$SHEETS" ] || usage
-case "$CLUB" in */*) ;; *) die "--club must be owner/repo, e.g. garjones/curling-kcc";; esac
+case "$CLUB" in */*) ;; *) die "--club must be owner/repo, e.g. yourclub/curling-yourclub";; esac
 [ "$(id -u)" = 0 ] || die "run as root (sudo)"
 command -v apt-get >/dev/null 2>&1 || die "this installer is for Debian/Ubuntu"
 
