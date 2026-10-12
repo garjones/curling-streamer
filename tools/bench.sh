@@ -59,8 +59,10 @@ if [ "${REAL}" = 1 ]; then
     RTSP_BASE="rtsp://127.0.0.1:8554"
     echo "bench: using the club's real cameras via the running MediaMTX"
 else
-    # A private MediaMTX on :8554 fed by synthetic 'cameras' that
-    # approximate an old camera's default stream (h264, ${SRC}, 30 fps).
+    # A private MediaMTX fed by synthetic 'cameras' that approximate an
+    # old camera's default stream (h264, ${SRC}, 30 fps) — a pre-encoded
+    # clip looped with -c copy, so the sources cost ~nothing and hold an
+    # exact 30 fps (see below).
     cat > "${WORK}/mtx.yml" <<EOF
 logLevel: error
 api: false
@@ -84,13 +86,24 @@ EOF
         echo "       stop it, or set DEMO_RTSP_PORT to a free port); its log:"
         cat "${WORK}/mtx.log"; exit 1
     }
+    # Encode the test card ONCE, then every publisher loops that file with
+    # -c copy. Live-encoding twelve x264 test cards on the box under test
+    # (the first version of this harness) cost ~3.5 cores AND could not hold
+    # 30 fps on a 4-core i7-6700: a probe measured 27.75 fps delivered, so
+    # six channels that tracked their input honestly reported 0.945x — the
+    # harness's ceiling, not the product's (12 Oct 2026). A copied loop is
+    # paced by -re at exactly 30 fps and costs almost nothing, like a real
+    # camera's hardware encoder does.
+    echo "bench: encoding the ${SRC} test card once (30 s loop)..."
+    ffmpeg -hide_banner -loglevel error -f lavfi -i "testsrc2=size=${SRC}:rate=30" \
+        -t 30 -c:v libx264 -preset ultrafast -tune zerolatency \
+        -b:v 2000k -g 60 -pix_fmt yuv420p -y "${WORK}/cam.mp4" || {
+        echo "bench: FAIL — could not encode the test card"; exit 1; }
     i=1
     while [ "${i}" -le "${SHEETS}" ]; do
         for role in home away; do
-            ffmpeg -hide_banner -loglevel error -re \
-                -f lavfi -i "testsrc2=size=${SRC}:rate=30" \
-                -c:v libx264 -preset ultrafast -tune zerolatency \
-                -b:v 2000k -g 60 -pix_fmt yuv420p \
+            ffmpeg -hide_banner -loglevel error -re -stream_loop -1 \
+                -i "${WORK}/cam.mp4" -c copy \
                 -f rtsp -rtsp_transport tcp \
                 "rtsp://127.0.0.1:${PORT}/cam-${i}-${role}" \
                 >"${WORK}/pub-${i}-${role}.log" 2>&1 &
