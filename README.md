@@ -202,8 +202,11 @@ survive. Keys go in `secrets.env` only.
 The full GPU graph — VAAPI decode, `scale_vaapi`, `pad_vaapi`, three
 `overlay_vaapi`, `h264_vaapi` — plus the FIFO scorebug, sponsor rail and
 silent audio: **six channels at 1280×720, every one ≥0.965× with zero
-dropped frames**, compositors ~25% CPU each, GPU engines barely warm.
-That is six sheets per box on refurbished hardware, with headroom. The
+dropped frames**, compositors ~25% CPU each, GPU engines barely warm;
+**six channels at 1920×1080 pass too** (0.987–1.01×, zero drops). That
+is six sheets per box on refurbished hardware at either canvas, with
+headroom. `tools/demo_dropout.sh` with `DEMO_ENCODER=vaapi` passes on
+the same box: the GPU graph exits on a lost camera or renderer. The
 day's wrong turns (VPP pixels, pad cost, FIFO starvation, camera clock
 skew — all tested and ruled out) and the real cause (audio/video clock
 offset, fixed with `setpts=PTS-STARTPTS`) are in the git log and the
@@ -214,5 +217,4 @@ comments in `streamer-compose`.
 Real cameras (synthetic 854×480 test cards so far — run `tools/bench.sh
 --real` at the club), QSV, actual YouTube ingest and the renderer under
 this box's systemd wrapping (both covered by `tools/home_soak.sh` once a
-stream key exists — results go in the club's deployment notes), and a
-1920×1080 canvas on the fixed graph (likely fine now; untested).
+stream key exists — results go in the club's deployment notes).
