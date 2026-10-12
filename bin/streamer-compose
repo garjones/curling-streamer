@@ -146,9 +146,9 @@ def main():
         """Scale a camera tile: on the GPU in gpu mode, swscale otherwise."""
         if gpu:
             filters.append(
-                f"[{src}:v]scale_vaapi=w={w}:h={h}:format=nv12[{label}]")
+                f"[{src}:v]{REBASE}scale_vaapi=w={w}:h={h}:format=nv12[{label}]")
         else:
-            filters.append(f"[{src}:v]scale={w}:{h}[{label}]")
+            filters.append(f"[{src}:v]{REBASE}scale={w}:{h}[{label}]")
 
     def upload_tile(src, w, h, label, native):
         """A CPU-side source (FIFO frame, PNG) made ready to composite.
@@ -164,6 +164,19 @@ def main():
         else:
             filters.append(f"[{src}:v]scale={w}:{h}[{label}]")
 
+    # Every LIVE camera input is re-based to start at zero when ffmpeg opens
+    # it. The silent audio track (anullsrc) starts at zero; an RTSP stream's
+    # timestamps start wherever its clock happens to be. The muxer interleaves
+    # by timestamp, so with the hero as the main input the output video
+    # carried the camera's offset and the muxer sat waiting for the audio
+    # clock to catch up while live frames backed up and dropped: 0.62x,
+    # independent of resolution, channel count or GPU load. Found by
+    # bisection on the pilot box, 12 Oct 2026 (one graph at a time; the
+    # audio track was the last thing added and the thing that broke it).
+    # The old graph only avoided this because its generated canvas also
+    # started at zero. Scorebug FIFO and sponsor image already start at zero.
+    REBASE = "setpts=PTS-STARTPTS,"
+
     # -- home / hero -------------------------------------------------------
     home = env("HOME_URL", required=True)
     cmd += rtsp_input(home)
@@ -171,7 +184,7 @@ def main():
     hx, hy = env("HERO_X", "0"), env("HERO_Y", "0")
     if gpu:
         filters.append(
-            f"[{idx}:v]scale_vaapi=w={hw}:h={hh}:format=nv12,"
+            f"[{idx}:v]{REBASE}scale_vaapi=w={hw}:h={hh}:format=nv12,"
             f"pad_vaapi=w={canvas_w}:h={canvas_h}:x={hx}:y={hy}:color=black[v1]")
         chain = "v1"
     else:

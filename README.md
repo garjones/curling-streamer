@@ -154,13 +154,21 @@ survive. Keys go in `secrets.env` only.
 - **Scaling and overlay run on the GPU** (`filtering: gpu`, the
   default): VAAPI hardware decode → `scale_vaapi` → `overlay_vaapi` →
   `h264_vaapi`, so a frame never enters system memory. The original
-  software graph is still there as `filtering: cpu`.
+  software graph is still there as `filtering: cpu` (both modes now
+  re-base every live camera to t=0 — see below).
   **Why it changed:** the first bench on the pilot box (i7-6700 + Arc
   A380, 12 Oct 2026) measured the software graph at **~2 CPU cores per
   channel** — two channels pegged the 4-core box at 1.06x and six
   channels managed 0.68x, while the Arc idled doing only the encode.
   The earlier note here said software filtering was fine until the bench
   said otherwise; the bench said otherwise.
+- **Live inputs are re-based to zero** (`setpts=PTS-STARTPTS`). The
+  silent audio track starts at t=0 and a camera's RTSP clock does not;
+  the muxer interleaves by timestamp, so once the hero became the main
+  input the output inherited the camera's offset and the muxer stalled
+  waiting for audio to catch up — a flat 0.62x at any resolution and
+  any channel count, with the GPU idle. Bisected on 12 Oct 2026; the
+  generated canvas of the old graph had been masking it.
 - **MediaMTX pinned to v1.19.1** (sha256 in `install.sh`), RTSP only,
   every other protocol and its API switched off — including MoQ, which
   that version turns on by default and which tried to write a
