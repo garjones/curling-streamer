@@ -197,10 +197,12 @@ bar=$(awk -v d="${DURATION}" 'BEGIN { printf "%.3f", 1 - 3 / d }')
 fail=0
 i=1
 while [ "${i}" -le "${SHEETS}" ]; do
-    last=$(grep -o 'frame=.*speed=[0-9.]*x' "${WORK}/ch-${i}.log" | tail -1)
-    speed=$(printf '%s' "${last}" | grep -o 'speed=[0-9.]*x' | sed 's/speed=//;s/x//')
-    drops=$(printf '%s' "${last}" | grep -o 'drop=[0-9]*' | sed 's/drop=//')
-    dups=$(printf '%s' "${last}" | grep -o 'dup=[0-9]*' | sed 's/dup=//')
+    # ffmpeg -stats writes progress updates separated by \r on one physical
+    # line, so normalise to newlines and take the LAST value of each field.
+    log="${WORK}/ch-${i}.log"
+    speed=$(tr '\r' '\n' < "${log}" | grep -o 'speed=[0-9.]*x' | tail -n 1 | sed 's/speed=//;s/x//')
+    drops=$(tr '\r' '\n' < "${log}" | grep -o 'drop=[0-9]*' | tail -n 1 | sed 's/drop=//')
+    dups=$(tr '\r' '\n' < "${log}" | grep -o 'dup=[0-9]*' | tail -n 1 | sed 's/dup=//')
     : "${drops:=0}" "${dups:=0}"
     if [ -z "${speed}" ]; then
         echo "  channel ${i}: NO RESULT (stalled or killed) — see ${WORK}/ch-${i}.log"
