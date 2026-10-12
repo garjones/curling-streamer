@@ -120,6 +120,15 @@ own MediaMTX on :8554 and refuse to run if something else holds the port
 (set `DEMO_RTSP_PORT` to a free one) — a demo that quietly used some
 other server's streams would prove nothing.
 
+`tools/home_soak.sh` is the last step before the box leaves for the
+club, and the only one that needs a real stream key: it runs ONE real
+`streamer@N` unit — production MediaMTX, the renderer against the club's
+counter server, sponsor rail, RTMP push — fed by two synthetic cameras
+on the box, so YouTube ingest and the auto-stop-off behaviour get tested
+from home. `start`, then `survive` (SIGKILLs the compositor; you confirm
+in YouTube Studio that the broadcast kept its watch URL), then `stop`,
+which restores the club's own config. Run `stop` before the box travels.
+
 ## YouTube notes (verified Aug 2026 — see HANDOFF.md §3.3)
 
 10 active streams per channel, 3 per stream key → twelve sheets = two
@@ -203,7 +212,7 @@ comments in `streamer-compose`.
 ## Not yet tested (honestly)
 
 Real cameras (synthetic 854×480 test cards so far — run `tools/bench.sh
---real` at the club), QSV, actual YouTube ingest, a 1920×1080 canvas on
-the fixed graph (likely fine now; untested), and the renderer against a
-live club (it is verbatim counter code, but this box's systemd wrapping
-of it is new).
+--real` at the club), QSV, actual YouTube ingest and the renderer under
+this box's systemd wrapping (both covered by `tools/home_soak.sh` once a
+stream key exists — results go in the club's deployment notes), and a
+1920×1080 canvas on the fixed graph (likely fine now; untested).
