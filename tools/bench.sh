@@ -121,6 +121,10 @@ echo $! > "${WORK}/fifo.pid"
 ffmpeg -hide_banner -loglevel error -f lavfi \
     -i "color=c=0x1a1a19:size=1920x360" -frames:v 1 -y "${WORK}/rail.png"
 
+# Each compositor gets a hard deadline (DURATION + 45 s, then SIGKILL).
+# Without it a channel whose source dies can sit dropping frames for ever
+# and the bench never returns — seen 12 Oct 2026. A killed channel has no
+# final speed= line and is reported as NO RESULT below.
 echo "bench: starting ${SHEETS} compositors..."
 i=1
 while [ "${i}" -le "${SHEETS}" ]; do
@@ -134,6 +138,7 @@ while [ "${i}" -le "${SHEETS}" ]; do
         BUG_X=1280 BUG_Y=360 BUG_W=640 BUG_H=360 \
         SPONSOR="${WORK}/rail.png" RAIL_X=0 RAIL_Y=720 RAIL_W=1920 RAIL_H=360 \
         DURATION="${DURATION}" OUTPUT_OVERRIDE=null \
+        timeout -k 10 "$((DURATION + 45))" \
         "${COMPOSE}" >"${WORK}/ch-${i}.log" 2>&1 &
     echo $! >> "${WORK}/chan.pid"
     i=$((i+1))

@@ -113,11 +113,18 @@ def main():
             args = ["-rtsp_flags", "listen"] + args
         return args + ["-i", url]
 
-    # The canvas every tile is composited onto. In gpu mode it is uploaded
-    # once per frame and overlaid on the GPU.
-    base = f"color=c=black:size={canvas_w}x{canvas_h}:rate={fps}"
-    filters = [f"{base},format=nv12,hwupload[base]" if gpu else f"{base}[base]"]
-    chain = "base"
+    # The canvas every tile is composited onto.
+    #   cpu: a generated black frame, overlaid in software.
+    #   gpu: NO generated canvas. The hero camera is scaled and then padded
+    #        out to canvas size with pad_vaapi, on the GPU, so nothing is
+    #        uploaded per frame and the hero drives the clock. The first
+    #        gpu build used color+hwupload here, which cost a 1080p upload
+    #        per frame per channel AND free-ran when a camera stopped:
+    #        bench 12 Oct 2026 showed a channel whose camera died dropping
+    #        111,671 frames at 272% CPU instead of exiting.
+    filters = [] if gpu else [
+        f"color=c=black:size={canvas_w}x{canvas_h}:rate={fps}[base]"]
+    chain = None if gpu else "base"
     idx = 0
 
     def overlay(src_label, x, y, out_label, live=True):
@@ -160,8 +167,16 @@ def main():
     # -- home / hero -------------------------------------------------------
     home = env("HOME_URL", required=True)
     cmd += rtsp_input(home)
-    scale_hw(idx, env("HERO_W", "1280"), env("HERO_H", "720"), "hero")
-    overlay("hero", env("HERO_X", "0"), env("HERO_Y", "0"), "v1")
+    hw, hh = env("HERO_W", "1280"), env("HERO_H", "720")
+    hx, hy = env("HERO_X", "0"), env("HERO_Y", "0")
+    if gpu:
+        filters.append(
+            f"[{idx}:v]scale_vaapi=w={hw}:h={hh}:format=nv12,"
+            f"pad_vaapi=w={canvas_w}:h={canvas_h}:x={hx}:y={hy}:color=black[v1]")
+        chain = "v1"
+    else:
+        scale_hw(idx, hw, hh, "hero")
+        overlay("hero", hx, hy, "v1")
     idx += 1
 
     # -- away --------------------------------------------------------------
