@@ -212,6 +212,16 @@ skew — all tested and ruled out) and the real cause (audio/video clock
 offset, fixed with `setpts=PTS-STARTPTS`) are in the git log and the
 comments in `streamer-compose`.
 
+**First run on real cameras (13 Oct 2026, at the club) found what a test
+card cannot:** several cameras send H.264 *Baseline* (not Constrained
+Baseline), which the Intel driver does not list, so the hardware decoder
+refused them and the VAAPI graph died with `-38`. Fixed with
+`-hwaccel_flags allow_profile_mismatch` on every live input (what such
+cameras emit is constrained baseline in all but name). Check a new
+club's cameras with `ffprobe -show_entries stream=profile` before
+blaming the box. The bench also makes the synthetic card High profile —
+real cameras are the only test of this path.
+
 ## Not yet tested (honestly)
 
 Real cameras (synthetic 854×480 test cards so far — run `tools/bench.sh

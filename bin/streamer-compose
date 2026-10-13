@@ -107,8 +107,18 @@ def main():
         if gpu:
             # Decode straight into VAAPI surfaces — the frames are never
             # touched by the CPU from here to the encoder.
+            # allow_profile_mismatch: some cameras signal plain H.264
+            # BASELINE (profile 66 without the constraint flag) while the
+            # Intel driver only lists CONSTRAINED Baseline. Without this the
+            # hardware decoder refuses the stream, ffmpeg silently falls
+            # back to software frames and scale_vaapi dies with -38 — five
+            # of KCC's twelve cameras, found at the club 13 Oct 2026. What
+            # the cameras emit is constrained baseline in all but name, so
+            # decoding it as such is correct; a camera using true Baseline
+            # extras (FMO/ASO) would show as corruption, visible in the soak.
             args = ["-hwaccel", "vaapi", "-hwaccel_device", "va",
-                    "-hwaccel_output_format", "vaapi"] + args
+                    "-hwaccel_output_format", "vaapi",
+                    "-hwaccel_flags", "allow_profile_mismatch"] + args
         if listen:
             args = ["-rtsp_flags", "listen"] + args
         return args + ["-i", url]
