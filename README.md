@@ -222,6 +222,15 @@ club's cameras with `ffprobe -show_entries stream=profile` before
 blaming the box. The bench also makes the synthetic card High profile —
 real cameras are the only test of this path.
 
+The same day found the second thing a test card hides: the **silent
+audio track**, generated as a separate `-f lavfi -i anullsrc` input,
+ran at a fraction of real time against real cameras and the muxer
+paced the whole stream to it (0.2–0.3x; YouTube reported "not
+receiving enough video"). Generated inside the filter graph instead,
+the full graph runs at 1.1x and **six sheets on the real cameras pass
+the bench** (13 Oct 2026). Why the standalone input misbehaves is not
+understood; the comment in `streamer-compose` says what was measured.
+
 ## Not yet tested (honestly)
 
 Real cameras (synthetic 854×480 test cards so far — run `tools/bench.sh
