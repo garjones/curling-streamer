@@ -87,7 +87,9 @@ changes `canvas`/cameras, not code:
   one never is. At 1280×720 every tile is 640×360 — cameras at 0.75×,
   scorebug native. The sponsor image is 16:9 here (a panel, not a
   strip); the club name is already on the scorebug, so keep the panel
-  to logo and sponsors.
+  to logo and sponsors. `tools/sponsor_placeholder.py --out <png>` draws
+  a labelled placeholder in the scorebug's frame (gradient, accent rule,
+  title bar and divider from `bug.html`, at 2×) for a club to replace.
 - `full-bug` — one camera full-frame, scorebug anchored bottom-right.
 
 The scorebug is always 640×360 by counter's contract and is scaled only
