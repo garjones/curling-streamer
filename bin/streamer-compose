@@ -12,7 +12,7 @@ Inputs (in order, only those configured):
   2  scorebug      raw RGBA over the renderer's named FIFO, 640x360 @ 1 fps
                    (overlay repeats the last frame between updates)
   3  sponsor rail  a static image (rotation is a TODO — see README)
-  +  silence       anullsrc; YouTube wants an audio track
+  +  silence       anullsrc inside the filter graph; YouTube wants an audio track
 
 GPU vs CPU filtering (FILTER_MODE, default gpu when ENCODER=vaapi):
 
@@ -244,9 +244,16 @@ def main():
         idx += 1
 
     # -- silent audio ------------------------------------------------------
-    cmd += ["-f", "lavfi", "-i",
-            "anullsrc=channel_layout=stereo:sample_rate=44100"]
-    audio_idx = idx
+    # Generated INSIDE the filter graph, not as a separate `-f lavfi -i`
+    # input. With real cameras (club, 13 Oct 2026) a standalone anullsrc
+    # input ran at ~0.2-0.3x of real time and the muxer, interleaving video
+    # with it, dragged the whole stream down to the same pace: the video
+    # finished its 30 s in 20 s wall and ffmpeg then sat 70 s waiting for
+    # the audio to catch up (A1/A2 vs A3 in the deployment notes). -re on
+    # the input did not help; a graph-driven source, pulled only as fast
+    # as the output consumes it, runs at 1.03x. The synthetic bench never
+    # showed this; the mechanism is not understood, only the fix is proven.
+    filters.append("anullsrc=channel_layout=stereo:sample_rate=44100[aout]")
 
     # -- encoder -----------------------------------------------------------
     if encoder == "vaapi":
@@ -266,7 +273,7 @@ def main():
         venc = ["-c:v", "libx264", "-preset", "veryfast"]
 
     cmd += ["-filter_complex", ";".join(filters),
-            "-map", f"[{vout}]", "-map", f"{audio_idx}:a"]
+            "-map", f"[{vout}]", "-map", "[aout]"]
     cmd += venc + [
         "-b:v", f"{bitrate_k}k", "-maxrate", f"{bitrate_k}k",
         "-bufsize", f"{bitrate_k * 2}k",
