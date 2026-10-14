@@ -152,7 +152,9 @@ survive. Keys go in `secrets.env` only.
 - Everything down? Power-cycle the box; every unit is `Restart=always`
   and the whole stack comes up by itself. The UPS exists so a flicker
   never forces that.
-- A missing stream key parks the unit with a readable message instead
+- A missing stream key parks the unit with a readable message (the
+  status page says "parked: missing stream key or sponsor image", not
+  "failed", because exit 78 is deliberate) instead
   of a restart loop (`RestartPreventExitStatus=78`).
 - Club link gone? The scorebug freezes on its last score (the renderer
   keeps repeating the frame) and catches up when the link returns; the

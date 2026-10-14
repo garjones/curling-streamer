@@ -38,9 +38,25 @@ def unit_state(unit):
     try:
         out = subprocess.run(["systemctl", "is-active", unit],
                              capture_output=True, text=True, timeout=5)
-        return out.stdout.strip() or "unknown"
+        state = out.stdout.strip() or "unknown"
     except Exception:
         return "unknown"
+    if state != "failed":
+        return state
+    # A compositor that exited 78 is parked on purpose (no stream key,
+    # missing sponsor image): say so, in words a volunteer can act on,
+    # instead of "failed" — which reads as "reach for the power button"
+    # (Gareth, first club install, 13 Oct 2026).
+    try:
+        out = subprocess.run(["systemctl", "show", "-p", "ExecMainStatus",
+                              "--value", unit],
+                             capture_output=True, text=True, timeout=5)
+        if out.stdout.strip() == "78":
+            return ("parked: missing stream key or sponsor image "
+                    "(journalctl -u " + unit + ")")
+    except Exception:
+        pass
+    return state
 
 
 def tcp_ok(host, port=554):
