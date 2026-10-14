@@ -21,8 +21,13 @@ filtering: gpu                # gpu  = decode/scale/composite all on the
 encoder: vaapi                # vaapi (Intel GPU on Debian — recommended),
                               # qsv (needs a libvpl ffmpeg), or
                               # x264 (CPU only — a few sheets at most)
-layout: hero-away-bug-rail    # or full-bug (single camera + scorebug)
-sponsor_image: /etc/streamer/sponsor.png   # remove line for no rail
+layout: hero-away-bug-rail    # quad (both houses equal, sponsor panel +
+                              # scorebug below — the end in play alternates,
+                              # so this is the one that always reads right),
+                              # or full-bug (single camera + scorebug)
+sponsor_image: /etc/streamer/sponsor.png   # remove line for no rail/panel.
+                              # Aspect follows the layout: 16:3 strip for
+                              # hero-away-bug-rail, 16:9 panel for quad.
 destination_default: rtmp://a.rtmp.youtube.com/live2
 
 # One entry per sheet. Ask each camera for its DEFAULT stream — no query

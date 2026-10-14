@@ -40,6 +40,12 @@ SERVICE_GROUP = "streamer"       # the group every systemd unit runs as
 #   hero-away-bug-rail — two cameras + bug + rail: hero top-left, away camera
 #     top-right, scorebug under it, sponsor rail across the bottom.
 #   full-bug — one camera full-frame, scorebug bottom-right.
+#   quad — both houses the same size, side by side on top; sponsor panel
+#     bottom-left, scorebug bottom-right. Nothing depends on which end is
+#     in play, which alternates every end (Gareth, 13 Oct 2026 — the
+#     hero/away layout only reads right for half the ends). At 1280x720
+#     every tile is 640x360: cameras at 0.75x, scorebug at native size.
+#     "hero" here is simply the home camera, left.
 LAYOUTS = {
     "hero-away-bug-rail": {
         "hero": (0, 0, 2 / 3, 2 / 3),
@@ -50,6 +56,12 @@ LAYOUTS = {
     "full-bug": {
         "hero": (0, 0, 1, 1),
         "bug":  None,            # anchored bottom-right at native size
+    },
+    "quad": {
+        "hero": (0, 0, 1 / 2, 1 / 2),
+        "away": (1 / 2, 0, 1 / 2, 1 / 2),
+        "rail": (0, 1 / 2, 1 / 2, 1 / 2),      # 16:9 sponsor panel
+        "bug":  (1 / 2, 1 / 2, 1 / 2, 1 / 2),
     },
 }
 
