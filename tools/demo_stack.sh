@@ -6,7 +6,7 @@
 # Production topology in miniature: a local MediaMTX receives two
 # synthetic camera publishers (854x480 H.264, like an old camera's
 # default stream); one compositor pulls both over RTSP, overlays a
-# scorebug fed through a named FIFO and a sponsor rail, encodes with
+# scorebug and sponsor rail each fed through a named FIFO, encodes with
 # x264 (no GPU needed) and writes 12 seconds of FLV. The FIFO writer
 # changes the scorebug colour at t=6 — mid-stream, through the pipe —
 # and the script PROVES the change reached the output by comparing the
@@ -94,8 +94,22 @@ with open(path, "wb", buffering=0) as f:
 EOF
 echo $! > "${WORK}/fifopy.pid"
 
-ffmpeg -hide_banner -loglevel error -f lavfi \
-    -i "color=c=0x3987e5:size=1920x360" -frames:v 1 -y "${WORK}/rail.png"
+echo "demo: sponsor-rail FIFO writer (colour flips at t=5, like the bug)"
+mkfifo "${WORK}/rail-01.fifo"
+python3 - "${WORK}/rail-01.fifo" <<'RAILEOF' >"${WORK}/railfifo.log" 2>&1 &
+import sys, time
+path = sys.argv[1]
+def frame(rgba):
+    return bytes(rgba) * (640 * 360)
+early = frame((57, 135, 229, 255))    # counter accent blue
+late = frame((40, 170, 90, 255))      # green
+with open(path, "wb", buffering=0) as f:
+    start = time.time()
+    while True:
+        f.write(early if time.time() - start < 5 else late)
+        time.sleep(1)
+RAILEOF
+echo $! >> "${WORK}/fifopy.pid"
 
 echo "demo: compositor running (12 s, x264)"
 env SHEET=1 FPS=30 CANVAS_W=1920 CANVAS_H=1080 BITRATE_K=4500 ENCODER=x264 \
@@ -104,7 +118,7 @@ env SHEET=1 FPS=30 CANVAS_W=1920 CANVAS_H=1080 BITRATE_K=4500 ENCODER=x264 \
     AWAY_URL="${RTSP}/cam-1-away" \
     AWAY_X=1280 AWAY_Y=0 AWAY_W=640 AWAY_H=360 \
     FIFO="${WORK}/bug-01.fifo" BUG_X=1280 BUG_Y=360 BUG_W=640 BUG_H=360 \
-    SPONSOR="${WORK}/rail.png" RAIL_X=0 RAIL_Y=720 RAIL_W=1920 RAIL_H=360 \
+    RAIL_FIFO="${WORK}/rail-01.fifo" RAIL_X=0 RAIL_Y=720 RAIL_W=1920 RAIL_H=360 \
     DURATION=12 OUTPUT_OVERRIDE="${WORK}/demo.flv" \
     "${HERE}/bin/streamer-compose" >"${WORK}/compose.log" 2>&1 || {
         echo "demo: FAIL — compositor died; log:"; cat "${WORK}/compose.log"
@@ -131,10 +145,21 @@ def bug_pixel(png):
     # centre of the scorebug tile: (1280+320, 360+180) on 1920-wide RGB
     off = ((360 + 180) * 1920 + (1280 + 320)) * 3
     return raw[off:off + 3]
+def rail_pixel(png):
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", png, "-f", "rawvideo",
+         "-pix_fmt", "rgb24", "-"], check=True, capture_output=True).stdout
+    # centre of the rail (0..1920 x 720..1080): (960, 900)
+    off = (900 * 1920 + 960) * 3
+    return raw[off:off + 3]
 e, l = bug_pixel(sys.argv[1]), bug_pixel(sys.argv[2])
 print(f"demo: scorebug centre pixel early={tuple(e)} late={tuple(l)}")
 assert e != l, "scorebug did NOT change — FIFO plumbing is broken"
 assert e[0] > 150 and l[1] > 100, "unexpected colours in scorebug tile"
-print("demo: PASS — mid-stream scorebug change reached the output")
+re_, rl = rail_pixel(sys.argv[1]), rail_pixel(sys.argv[2])
+print(f"demo: rail centre pixel early={tuple(re_)} late={tuple(rl)}")
+assert re_ != rl, "sponsor rail did NOT change — rail FIFO plumbing is broken"
+assert re_[2] > 150 and rl[1] > 120, "unexpected colours in rail tile"
+print("demo: PASS — mid-stream scorebug AND rail changes reached the output")
 EOF
 echo "demo: PASS — RTSP in, composite out, FIFO live. Stack works here."

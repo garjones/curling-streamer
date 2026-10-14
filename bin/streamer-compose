@@ -11,7 +11,8 @@ Inputs (in order, only those configured):
   1  away camera   RTSP (layouts with an away tile)
   2  scorebug      raw RGBA over the renderer's named FIFO, 640x360 @ 1 fps
                    (overlay repeats the last frame between updates)
-  3  sponsor rail  a static image (rotation is a TODO — see README)
+  3  sponsor rail  counter's rail tile over a second FIFO (rail-NN.fifo,
+                   same contract as the scorebug), or a static image
   +  silence       anullsrc inside the filter graph; YouTube wants an audio track
 
 GPU vs CPU filtering (FILTER_MODE, default gpu when ENCODER=vaapi):
@@ -224,10 +225,24 @@ def main():
         overlay("bug", env("BUG_X", "1280"), env("BUG_Y", "360"), "v3")
         idx += 1
 
-    # -- sponsor rail (static image; safe with -loop because it never
-    #    changes while ffmpeg runs — rotation will need its own FIFO) ------
+    # -- sponsor rail ------------------------------------------------------
+    # Preferred: counter's /rail tile over its own FIFO, exactly like the
+    # scorebug (RAIL_FIFO, from club.yaml `sponsor_rail: counter`). The club
+    # changes sponsors on counter's admin page and the renderer pushes a new
+    # frame; nothing here restarts. Live input, so eof_action=endall like
+    # the bug: a renderer restart ends ffmpeg and the unit reconnects.
+    rail_fifo = env("RAIL_FIFO")
     sponsor = env("SPONSOR")
-    if sponsor:
+    if rail_fifo:
+        cmd += ["-f", "rawvideo", "-pix_fmt", "rgba",
+                "-video_size", "640x360", "-framerate", "1", "-i", rail_fifo]
+        rw, rh = env("RAIL_W", "640"), env("RAIL_H", "360")
+        upload_tile(idx, rw, rh, "rail", native=(rw, rh) == ("640", "360"))
+        overlay("rail", env("RAIL_X", "640"), env("RAIL_Y", "360"), "v4")
+        idx += 1
+    # Alternative: a static image (safe with -loop because it never changes
+    # while ffmpeg runs; changing it means a restart).
+    elif sponsor:
         if not os.path.exists(sponsor):
             # ffmpeg would exit 1 and the unit would restart every 5 s; a
             # missing file is configuration, so park with a readable reason.

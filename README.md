@@ -20,7 +20,7 @@ Four services, all boring on purpose:
 |---|---|
 | `streamer-mediamtx` | [MediaMTX](https://github.com/bluenviron/mediamtx) pulls each camera's **default stream** exactly once and republishes on the LAN. Every consumer — compositors, kiosk TVs, a coach's VLC — reads `rtsp://<box>:8554/cam-N-{home,away}` instead of touching a camera. An old camera therefore ever sees **one client**, which is the structural fix for the identical-streams rule (Axis: identical requests share one encoder instance; different ones don't, and a 2014 SoC runs out fast). |
 | `streamer@N` | One ffmpeg per sheet: decode both cameras, scale, overlay scorebug + sponsor rail, encode (VAAPI on Intel GPU), push RTMP. `systemctl status streamer@7` is the whole debugging story. |
-| `streamer-renderer` | counter's scorebug renderer, vendored verbatim in `renderer/` — one WebSocket to the club (never polling), headless Chromium screenshot on score change, raw RGBA repeated at 1 fps into `/run/counter/bug-NN.fifo`. Why a FIFO and not a PNG: ffmpeg decodes a still image **once** and caches it forever; the pipe is the only way a changing image reaches a running ffmpeg (proved by `renderer/fifo_demo.py`, and again by `tools/demo_stack.sh`). |
+| `streamer-renderer` | counter's scorebug renderer, vendored verbatim in `renderer/` — one WebSocket to the club (never polling), headless Chromium screenshot on score change, raw RGBA repeated at 1 fps into `/run/counter/bug-NN.fifo` — and, with `sponsor_rail: counter`, counter's sponsor-rail tile into `rail-NN.fifo` whenever the club's rail changes. Why a FIFO and not a PNG: ffmpeg decodes a still image **once** and caches it forever; the pipe is the only way a changing image reaches a running ffmpeg (proved by `renderer/fifo_demo.py`, and again by `tools/demo_stack.sh`). |
 | `streamer-status` | One dark, phone-readable page at `http://<box>:8080/` — per-sheet unit state, FIFO presence, camera reachability. No accounts; being on the club LAN is the credential. |
 
 Configuration is **one YAML file** (`/etc/streamer/club.yaml`) plus one
@@ -85,17 +85,37 @@ changes `canvas`/cameras, not code:
   bottom-right. The end in play alternates every
   end, so a layout that favours one house is wrong half the time; this
   one never is. At 1280×720 every tile is 640×360 — cameras at 0.75×,
-  scorebug native. The sponsor image is 16:9 here (a panel, not a
+  scorebug native. The sponsor panel is 16:9 here (a panel, not a
   strip); the club name is already on the scorebug, so keep the panel
-  to logo and sponsors. `tools/sponsor_placeholder.py --out <png>` draws
-  a labelled placeholder in the scorebug's frame (gradient, accent rule,
-  title bar and divider from `bug.html`, at 2×) for a club to replace.
+  to logo and sponsors.
 - `full-bug` — one camera full-frame, scorebug anchored bottom-right.
 
 The scorebug is always 640×360 by counter's contract and is scaled only
-if a layout slot differs. The sponsor rail is a static image for now;
-**rotation is a TODO** and will need its own small FIFO writer — do not
-try `-loop 1` with a changing file (see the FIFO note above).
+if a layout slot differs.
+
+The sponsor rail comes one of two ways:
+
+- **`sponsor_rail: counter`** (the way to go when the club runs counter):
+  the panel is counter's `/rail/<club>/<n>` tile — the club logo and
+  sponsor logos in the scorebug's frame, managed **per sheet** on
+  counter's admin page (`/a/<token>`, with a "same rail on every sheet"
+  option). The renderer screenshots it into `/run/counter/rail-NN.fifo`
+  exactly as it does the scorebug, whenever counter pushes a new rail
+  revision over the same WebSocket, and the compositor reads it as a
+  second live FIFO input. Changing sponsors touches nothing on the box
+  and restarts nothing. Needs `counter_server` and a 16:9 rail slot
+  (`quad`); `streamer-generate` refuses the strip layouts, because the
+  tile is 640×360 and would be stretched.
+- **`sponsor_image: <png>`**: a static picture the club repo ships
+  (`streaming/sponsor.png`), read once at ffmpeg start — changing it
+  means a deploy and a restart. `tools/sponsor_placeholder.py --out
+  <png>` draws a labelled placeholder in the scorebug's frame for a
+  club without counter. Any aspect, so this is also the only option for
+  `hero-away-bug-rail`'s 16:3 strip.
+
+Rotation (several rails taking turns) is not built; when it is, it
+belongs in counter's tile and the renderer's re-screenshot cadence — do
+not try `-loop 1` with a changing file (see the FIFO note above).
 
 A silent stereo audio track is always included: platforms expect one,
 the cameras have none, and the club audio question (house mic vs music

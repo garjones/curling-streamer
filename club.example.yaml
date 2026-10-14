@@ -28,6 +28,12 @@ layout: hero-away-bug-rail    # quad (both houses equal, scorebug +
 sponsor_image: /etc/streamer/sponsor.png   # remove line for no rail/panel.
                               # Aspect follows the layout: 16:3 strip for
                               # hero-away-bug-rail, 16:9 panel for quad.
+# sponsor_rail: counter       # INSTEAD of sponsor_image: the panel is
+                              # counter's /rail/<club>/<n> tile, managed
+                              # per sheet on counter's admin page and fed
+                              # to ffmpeg like the scorebug — change the
+                              # sponsors there, nothing on the box restarts.
+                              # Needs counter_server and a 16:9 slot (quad).
 destination_default: rtmp://a.rtmp.youtube.com/live2
 
 # One entry per sheet. Ask each camera for its DEFAULT stream — no query

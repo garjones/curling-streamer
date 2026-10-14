@@ -12,12 +12,16 @@ User=streamer
 Group=streamer
 EnvironmentFile=/etc/streamer/renderer.env
 # /run/counter is created fresh each boot; the compositors read the FIFOs
-# from the same path (counter's contract: bug-NN.fifo, 640x360 RGBA @1fps).
+# from the same path (counter's contract: bug-NN.fifo and rail-NN.fifo,
+# 640x360 RGBA @1fps).
 RuntimeDirectory=counter
 RuntimeDirectoryMode=0755
+# $RENDERER_RAIL is "--rail" when club.yaml says `sponsor_rail: counter`
+# (the renderer then also feeds rail-NN.fifo) and absent otherwise; the
+# bare-word form contributes no argument when unset.
 ExecStart=/usr/bin/python3 /opt/streamer/renderer/counter_renderer.py \
     --server ${COUNTER_SERVER} --club ${COUNTER_CLUB} \
-    --sheets ${RENDERER_SHEETS} --fifo-dir /run/counter
+    --sheets ${RENDERER_SHEETS} --fifo-dir /run/counter $RENDERER_RAIL
 Restart=always
 RestartSec=5
 

@@ -10,8 +10,10 @@ change is that the old /api/rev poll loop is now one WebSocket to the club
 
     one WebSocket ──▶ headless Chromium screenshot (one at a time)
                           └─▶ decoded RGBA frame held in memory
-                                  └─▶ one writer thread per sheet
+                                  └─▶ one writer thread per sheet (and per
+                                      tile: bug, and rail with --rail)
                                           └─▶ bug-07.fifo ──▶ ffmpeg ──▶ stream
+                                              rail-07.fifo ─┘
 
 Why a FIFO at all: `ffmpeg -loop 1 -i bug.png` reads the file ONCE and caches
 the decoded frame — overwriting the PNG changes nothing, and ffmpeg 6.x has
@@ -29,7 +31,13 @@ writer thread keeps repeating the previous frame, so no stream ever stalls.
 If the network drops, the writers keep pushing the last known frame: the
 stream shows a frozen score rather than breaking.
 
-Run:  python3 counter_renderer.py --server https://counter.gareth.live --club kelowna
+With --rail the same machinery also renders the sponsor rail: /rail/<club>/<n>
+is screenshotted into rail-NN.fifo whenever the club's rail revision changes
+(the hello carries club.rail_rev; every admin-page save pushes
+{"type":"rail","rev":N} on the same socket). Scores change often and
+sponsors rarely, so the bug is always queued ahead of the rail.
+
+Run:  python3 counter_renderer.py --server https://counter.gareth.live --club kelowna [--rail]
 
 Standard library only. Needs Chromium (env COUNTER_CHROMIUM) and ffmpeg on
 PATH.
@@ -133,61 +141,73 @@ def _decode_png(png):
     return raw
 
 
+# The two tiles a sheet can have. Sorted order matters: the shooter always
+# takes the lowest pending job, so "bug" (scores) goes before "rail".
+BUG, RAIL = "bug", "rail"
+
+
 class Renderer:
-    def __init__(self, server, club, fifo_dir, sheets, chromium, fps):
+    def __init__(self, server, club, fifo_dir, sheets, chromium, fps, rail=False):
         self.server = server.rstrip("/")
         self.club = club
         self.fifo_dir = fifo_dir
         self.sheets = sheets                 # None until the hello arrives
         self.chromium = chromium
         self.frame_interval = 1.0 / fps
-        self.frames = {}                     # sheet -> latest RGBA frame
-        self.last_rev = {}
-        self.pending = set()                 # sheets waiting for a screenshot
+        self.kinds = (BUG, RAIL) if rail else (BUG,)
+        self.frames = {}                     # (kind, sheet) -> latest RGBA frame
+        self.last_rev = {}                   # sheet -> last bug rev seen
+        self.rail_rev = None                 # last rail rev seen (club-wide)
+        self.pending = set()                 # (kind, sheet) waiting for a screenshot
         self.cond = threading.Condition()
-        self.started_writers = set()
+        self.started_writers = set()         # (kind, sheet)
+        self.known_sheets = set()
 
     def ws_url(self):
         scheme = "wss" if self.server.startswith("https") else "ws"
         host = self.server.split("://", 1)[1]
         return f"{scheme}://{host}/api/ws/c/{self.club}"
 
-    def fifo_path(self, sheet):
-        return os.path.join(self.fifo_dir, f"bug-{sheet:02d}.fifo")
+    def fifo_path(self, kind, sheet):
+        return os.path.join(self.fifo_dir, f"{kind}-{sheet:02d}.fifo")
 
     def ensure_sheet(self, sheet):
-        """Create the FIFO and writer thread for a sheet, once."""
-        if sheet in self.started_writers:
-            return
-        self.started_writers.add(sheet)
-        # Until the first screenshot lands, feed black so streams can start.
-        self.frames.setdefault(sheet, bytes(FRAME_BYTES))
-        path = self.fifo_path(sheet)
-        if os.path.exists(path):
-            if not stat.S_ISFIFO(os.stat(path).st_mode):
-                raise SystemExit(f"{path} exists and is not a FIFO")
-        else:
-            os.mkfifo(path)
-        threading.Thread(target=self.writer, args=(sheet,), daemon=True).start()
+        """Create the FIFO(s) and writer thread(s) for a sheet, once."""
+        self.known_sheets.add(sheet)
+        for kind in self.kinds:
+            key = (kind, sheet)
+            if key in self.started_writers:
+                continue
+            self.started_writers.add(key)
+            # Until the first screenshot lands, feed black so streams can start.
+            self.frames.setdefault(key, bytes(FRAME_BYTES))
+            path = self.fifo_path(kind, sheet)
+            if os.path.exists(path):
+                if not stat.S_ISFIFO(os.stat(path).st_mode):
+                    raise SystemExit(f"{path} exists and is not a FIFO")
+            else:
+                os.mkfifo(path)
+            threading.Thread(target=self.writer, args=(key,), daemon=True).start()
 
-    # -- one writer thread per sheet: repeat the latest frame at ~1 fps ----
-    def writer(self, sheet):
-        path = self.fifo_path(sheet)
+    # -- one writer thread per tile: repeat the latest frame at ~1 fps -----
+    def writer(self, key):
+        kind, sheet = key
+        path = self.fifo_path(kind, sheet)
         while True:
             try:
                 # Opening a FIFO for writing blocks until a reader (ffmpeg)
                 # attaches. That is correct: this thread parks until the
                 # sheet's stream starts.
                 with open(path, "wb", buffering=0) as fifo:
-                    log(f"sheet {sheet}: ffmpeg attached to {path}")
+                    log(f"{kind} {sheet}: ffmpeg attached to {path}")
                     while True:
-                        fifo.write(self.frames[sheet])
+                        fifo.write(self.frames[key])
                         time.sleep(self.frame_interval)
             except BrokenPipeError:
                 # ffmpeg restarted; reopen and the stream self-recovers
-                log(f"sheet {sheet}: reader went away, waiting for it to return")
+                log(f"{kind} {sheet}: reader went away, waiting for it to return")
             except OSError as e:
-                log(f"sheet {sheet}: FIFO error {e}; retrying in 5s")
+                log(f"{kind} {sheet}: FIFO error {e}; retrying in 5s")
                 time.sleep(5)
 
     # -- one screenshot worker: strictly one Chromium at a time ------------
@@ -196,21 +216,22 @@ class Renderer:
             with self.cond:
                 while not self.pending:
                     self.cond.wait()
-                sheet = min(self.pending)
-                self.pending.discard(sheet)
-            url = f"{self.server}/bug/{self.club}/{sheet}"
+                key = min(self.pending)      # ("bug", n) sorts before ("rail", n)
+                self.pending.discard(key)
+            kind, sheet = key
+            url = f"{self.server}/{kind}/{self.club}/{sheet}"
             t0 = time.time()
             try:
                 with tempfile.TemporaryDirectory(prefix="counter-shot-") as workdir:
-                    self.frames[sheet] = screenshot_rgba(self.chromium, url, workdir)
-                log(f"sheet {sheet}: new frame in {time.time() - t0:.1f}s")
+                    self.frames[key] = screenshot_rgba(self.chromium, url, workdir)
+                log(f"{kind} {sheet}: new frame in {time.time() - t0:.1f}s")
             except Exception as e:
                 # Do not swallow this: a sheet that stops updating must say
                 # so. The stream keeps showing the previous frame.
                 detail = ""
                 if isinstance(e, subprocess.CalledProcessError):
                     detail = " — " + e.stderr.decode(errors="replace").strip()[-300:]
-                log(f"ERROR sheet {sheet}: screenshot failed: {e}{detail}; "
+                log(f"ERROR {kind} {sheet}: screenshot failed: {e}{detail}; "
                     "stream keeps showing the previous frame")
                 time.sleep(2)
 
@@ -219,8 +240,23 @@ class Renderer:
             if rev is None or rev != self.last_rev.get(sheet):
                 if rev is not None:
                     self.last_rev[sheet] = rev
-                self.pending.add(sheet)
+                self.pending.add((BUG, sheet))
                 self.cond.notify_all()
+
+    def mark_rail_pending(self, rev):
+        """A new rail revision: every sheet's rail tile is re-shot (a rail
+        change may affect any sheet, and six screenshots is cheap)."""
+        if RAIL not in self.kinds:
+            return
+        with self.cond:
+            if rev is not None and rev == self.rail_rev:
+                return
+            self.rail_rev = rev
+            for n in sorted(self.known_sheets):
+                self.pending.add((RAIL, n))
+            if self.known_sheets:
+                log(f"rail rev {rev}: re-rendering {len(self.known_sheets)} sheet(s)")
+            self.cond.notify_all()
 
     # -- the one WebSocket: reconnect forever, never poll -------------------
     def run(self):
@@ -261,6 +297,9 @@ class Renderer:
                             self.ensure_sheet(n)
                             s = states.get(str(n))
                             self.mark_pending(n, s.get("rev") if s else None)
+                        self.mark_rail_pending((m.get("club") or {}).get("rail_rev"))
+                    elif m.get("type") == "rail":
+                        self.mark_rail_pending(m.get("rev"))
                     elif m.get("type") == "state":
                         s = m["state"]
                         n = int(s["sheet"])
@@ -295,10 +334,13 @@ def main(argv=None):
     parser.add_argument("--chromium", default=default_chromium(),
                         help="Chromium binary (default: $COUNTER_CHROMIUM)")
     parser.add_argument("--fps", type=float, default=1.0)
+    parser.add_argument("--rail", action="store_true",
+                        help="also render the sponsor rail into rail-NN.fifo")
     args = parser.parse_args(argv)
     try:
         Renderer(args.server, args.club, args.fifo_dir,
-                 parse_sheets(args.sheets), args.chromium, args.fps).run()
+                 parse_sheets(args.sheets), args.chromium, args.fps,
+                 rail=args.rail).run()
     except KeyboardInterrupt:
         pass
 
