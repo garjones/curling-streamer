@@ -45,7 +45,7 @@ SERVICE_GROUP = "streamer"       # the group every systemd unit runs as
 #     in play, which alternates every end (Gareth, 13 Oct 2026 — the
 #     hero/away layout only reads right for half the ends). At 1280x720
 #     every tile is 640x360: cameras at 0.75x, scorebug at native size.
-#     "hero" here is simply the home camera, left.
+#     "hero" here is simply the home camera; away end left, home right.
 LAYOUTS = {
     "hero-away-bug-rail": {
         "hero": (0, 0, 2 / 3, 2 / 3),
@@ -58,8 +58,8 @@ LAYOUTS = {
         "bug":  None,            # anchored bottom-right at native size
     },
     "quad": {
-        "hero": (0, 0, 1 / 2, 1 / 2),
-        "away": (1 / 2, 0, 1 / 2, 1 / 2),
+        "away": (0, 0, 1 / 2, 1 / 2),          # away end left, home end right
+        "hero": (1 / 2, 0, 1 / 2, 1 / 2),      # (Gareth, at the club, 14 Oct)
         "bug":  (0, 1 / 2, 1 / 2, 1 / 2),
         "rail": (1 / 2, 1 / 2, 1 / 2, 1 / 2),  # 16:9 sponsor panel
     },

@@ -80,8 +80,9 @@ changes `canvas`/cameras, not code:
   away camera ⅓×⅓ top-right, scorebug under it, sponsor rail across the
   bottom. At 1920×1080 that is exactly 1280×720 + 640×360 + 640×360 +
   1920×360, and the scorebug slot is the bug's native size.
-- `quad` — both houses the same size side by side on top, scorebug
-  bottom-left, sponsor panel bottom-right. The end in play alternates every
+- `quad` — both houses the same size side by side on top (away end
+  left, home end right), scorebug bottom-left, sponsor panel
+  bottom-right. The end in play alternates every
   end, so a layout that favours one house is wrong half the time; this
   one never is. At 1280×720 every tile is 640×360 — cameras at 0.75×,
   scorebug native. The sponsor image is 16:9 here (a panel, not a
