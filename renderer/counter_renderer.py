@@ -300,6 +300,14 @@ class Renderer:
                         self.mark_rail_pending((m.get("club") or {}).get("rail_rev"))
                     elif m.get("type") == "rail":
                         self.mark_rail_pending(m.get("rev"))
+                    elif m.get("type") == "club":
+                        # Club settings changed (e.g. the idle message):
+                        # re-shoot every bug; rev=None forces it.
+                        with self.cond:
+                            for n in sorted(self.known_sheets):
+                                self.pending.add((BUG, n))
+                            self.cond.notify_all()
+                        log("club settings changed: re-rendering scorebugs")
                     elif m.get("type") == "state":
                         s = m["state"]
                         n = int(s["sheet"])
