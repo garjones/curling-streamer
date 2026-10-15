@@ -360,6 +360,25 @@ def repair_broadcast(token, b, dry):
     return True
 
 
+def set_privacy(token, b, privacy, dry):
+    """club.yaml's youtube.privacy applies to existing broadcasts too, so a
+    change there does not wait for every broadcast to be replaced."""
+    st_ = b.get("status", {})
+    if st_.get("privacyStatus") == privacy:
+        return False
+    if dry:
+        return True
+    status = {"privacyStatus": privacy,
+              "selfDeclaredMadeForKids": st_.get("selfDeclaredMadeForKids", False)}
+    st, r = http("PUT", f"{API}/liveBroadcasts?part=status",
+                 {"id": b["id"], "status": status}, token=token)
+    if st != 200:
+        log(f"  could not set privacy on {b['id']} ({st}): {api_error(r)}")
+        return False
+    b["status"]["privacyStatus"] = privacy
+    return True
+
+
 def tell_counter(cfg, sheet, url, dry):
     tok = cfg["secrets"].get("COUNTER_ADMIN_TOKEN")
     if not cfg["counter_server"] or not tok:
@@ -401,7 +420,9 @@ def cmd_ensure(cfg, args):
                 continue
             b = pick_live_broadcast(bcasts.get(stream["id"], []))
             if b:
-                what = "repaired" if repair_broadcast(token, b, dry) else "ok"
+                fixed = repair_broadcast(token, b, dry)
+                fixed = set_privacy(token, b, cfg["privacy"], dry) or fixed
+                what = "repaired" if fixed else "ok"
             else:
                 title = cfg["title"].format(club=cfg["club"], sheet=n)
                 b = create_broadcast(token, title, cfg["privacy"], stream["id"], dry)

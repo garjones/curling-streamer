@@ -177,13 +177,18 @@ auto-start/auto-stop switches, but the Data API still has them, and
 
 - `streamer-youtube ensure` — for each sheet on this box: find the stream
   whose key is `SHEET_N_KEY`, find its live-capable broadcast or create
-  one with **auto-start on, auto-stop off** (bound, unlisted by default,
-  not made for kids), repair a Studio-made one the same way, and write
-  the watch URL to counter's admin API so the "Watch live" buttons
-  maintain themselves. A broadcast made this way goes live when the
-  encoder connects and keeps its URL across restarts; it only ends when
-  someone presses End stream in Studio, after which the next `ensure`
-  makes a fresh one.
+  one with **auto-start on, auto-stop off** (bound, not made for kids,
+  privacy from `youtube.privacy`), repair a Studio-made one the same way,
+  set an existing broadcast's privacy to match `club.yaml` if it differs,
+  and write the watch URL to counter's admin API so the "Watch live"
+  buttons maintain themselves. A broadcast made this way goes live when
+  the encoder connects and keeps its URL across restarts; it only ends
+  when someone presses End stream in Studio, after which the next
+  `ensure` makes a fresh one. YouTube will not let the auto-start/stop
+  switches change on a broadcast that is on air, so a Studio-made one
+  found live is left alone (and said so) until it ends — a replacement
+  follows at the next run. Requests to counter carry a named User-Agent;
+  Cloudflare's Browser Integrity Check bans urllib's default one.
 - `streamer-youtube.timer` runs `ensure` two minutes after boot and every
   four hours; `streamer-deploy` also kicks it after a deploy. The unit is
   inactive unless `club.yaml` has a `youtube:` section (same
