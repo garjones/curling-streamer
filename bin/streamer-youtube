@@ -95,13 +95,23 @@ def read_secrets(path):
     return out
 
 
-def expand(text, secrets, context):
+def expand(text, secrets, context, lenient=False):
+    """Replace ${VAR} from secrets.env. Unset is a config error, except
+    with lenient=True, where the whole value becomes "" — used for refresh
+    tokens, which do not exist until `auth` has been run, and `auth`
+    itself has to be able to load the config."""
+    missing = []
+
     def sub(m):
         var = m.group(1)
         if var not in secrets or not secrets[var]:
+            if lenient:
+                missing.append(var)
+                return ""
             die(f"{context}: ${{{var}}} is not set in secrets.env", EX_CONFIG)
         return secrets[var]
-    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", sub, str(text))
+    out = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", sub, str(text))
+    return "" if missing else out
 
 
 def parse_sheets(spec):
@@ -138,8 +148,10 @@ def load_config():
         channels.append({
             "index": i,
             "sheets": sheets,
+            # "" until `auth` has been run for this channel: ensure/status
+            # report it, they do not refuse to start.
             "refresh_token": expand(ch.get("refresh_token", ""), secrets,
-                                    f"youtube.channels[{i}].refresh_token")
+                                    f"youtube.channels[{i}].refresh_token", lenient=True)
                              if ch.get("refresh_token") else "",
         })
     if not channels:
@@ -350,6 +362,9 @@ def cmd_ensure(cfg, args):
     only = set(parse_sheets(args.sheets)) if args.sheets else None
     problems = 0
     for ch in cfg["channels"]:
+        wanted = [n for n in ch["sheets"] if not only or n in only]
+        if not wanted:
+            continue  # --sheets does not touch this channel at all
         if not ch["refresh_token"]:
             log(f"channel {ch['index']} (sheets {ch['sheets']}): no refresh token — run `auth` first")
             problems += 1
@@ -357,9 +372,7 @@ def cmd_ensure(cfg, args):
         token = access_token(cfg["secrets"], ch["refresh_token"])
         streams = streams_by_key(token)
         bcasts = broadcasts_by_stream(token)
-        for n in ch["sheets"]:
-            if only and n not in only:
-                continue
+        for n in wanted:
             key = cfg["secrets"].get(f"SHEET_{n}_KEY", "")
             if not key:
                 log(f"sheet {n}: SHEET_{n}_KEY not set — skipped")
