@@ -103,6 +103,7 @@ if [ "$ENABLE" = 1 ] && command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload
     systemctl enable --now streamer-mediamtx streamer-status >/dev/null 2>&1
     systemctl enable streamer-renderer >/dev/null 2>&1   # stays inactive if renderer.env is empty
+    systemctl enable --now streamer-youtube.timer >/dev/null 2>&1 || true  # ditto, youtube.env
     for n in $(expand_sheets "$SHEETS"); do
         systemctl enable "streamer@$n" >/dev/null 2>&1
     done
@@ -112,6 +113,8 @@ if [ "$ENABLE" = 1 ] && command -v systemctl >/dev/null 2>&1; then
     for n in $(expand_sheets "$SHEETS"); do
         systemctl restart "streamer@$n" || true
     done
+    # Broadcasts + watch URLs, in the background; a no-op without youtube.env.
+    systemctl start --no-block streamer-youtube.service >/dev/null 2>&1 || true
     ip=$(hostname -I 2>/dev/null | awk '{print $1}')
     echo
     echo "streamer-deploy: sheets $SHEETS applied and (re)started."

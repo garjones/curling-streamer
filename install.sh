@@ -58,11 +58,12 @@ install -m 755 "${HERE}/bin/streamer-generate"      /usr/local/bin/
 install -m 755 "${HERE}/bin/streamer-compose"       /usr/local/bin/
 install -m 755 "${HERE}/bin/streamer-status-server" /usr/local/bin/
 install -m 755 "${HERE}/bin/streamer-deploy"        /usr/local/bin/
+install -m 755 "${HERE}/bin/streamer-youtube"       /usr/local/bin/
 install -d /opt/streamer/renderer
 install -m 644 "${HERE}"/renderer/*.py "${HERE}"/renderer/*.md /opt/streamer/renderer/ 2>/dev/null || \
     install -m 644 "${HERE}"/renderer/*.py /opt/streamer/renderer/
 install -m 644 "${HERE}/README.md" /opt/streamer/ 2>/dev/null || true
-install -m 644 "${HERE}"/systemd/*.service /etc/systemd/system/
+install -m 644 "${HERE}"/systemd/*.service "${HERE}"/systemd/*.timer /etc/systemd/system/
 
 install -d -m 755 /etc/streamer
 [ -f /etc/streamer/club.yaml ] || \
@@ -72,7 +73,7 @@ install -d -m 755 /etc/streamer
 # root:streamer contradicted the docs and made streamer-generate warn).
 [ -f /etc/streamer/secrets.env ] || \
     install -m 600 -o root -g root "${HERE}/secrets.example.env" /etc/streamer/secrets.env
-touch /etc/streamer/renderer.env
+touch /etc/streamer/renderer.env /etc/streamer/youtube.env
 
 systemctl daemon-reload
 systemctl enable streamer-status.service >/dev/null 2>&1 || true

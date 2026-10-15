@@ -1,0 +1,16 @@
+[Unit]
+Description=Streamer: persistent YouTube broadcast per sheet, watch URLs to counter
+Documentation=file:///opt/streamer/README.md
+After=network-online.target
+Wants=network-online.target
+# No youtube: section in club.yaml? streamer-generate leaves youtube.env
+# empty and this unit stays quietly inactive.
+ConditionFileNotEmpty=/etc/streamer/youtube.env
+
+[Service]
+Type=oneshot
+# Reads club.yaml and secrets.env itself; EnvironmentFile hands it the
+# same secrets the compositors get (stream keys, OAuth client, tokens).
+EnvironmentFile=/etc/streamer/secrets.env
+EnvironmentFile=/etc/streamer/youtube.env
+ExecStart=/usr/local/bin/streamer-youtube ensure

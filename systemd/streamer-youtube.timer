@@ -1,0 +1,11 @@
+[Unit]
+Description=Run streamer-youtube ensure after boot and every few hours
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=4h
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

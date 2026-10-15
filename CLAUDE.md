@@ -49,7 +49,7 @@ Either way: say what you could not run rather than faking a result.
 
 ### A. Static checks (always runnable)
 1. Byte-compile the Python:
-   `python3 -m py_compile bin/streamer-generate bin/streamer-compose bin/streamer-status-server renderer/*.py`
+   `python3 -m py_compile bin/streamer-generate bin/streamer-compose bin/streamer-status-server bin/streamer-youtube renderer/*.py`
 2. Syntax-check the shell: `sh -n install.sh bootstrap.sh bin/streamer-deploy tools/*.sh`
    (`bootstrap.sh` and `install.sh` are Debian-only — read, never run
    here; `streamer-deploy` runs on a Mac with `STREAMER_ETC=<dir>` and

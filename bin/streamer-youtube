@@ -1,0 +1,429 @@
+#!/usr/bin/env python3
+"""streamer-youtube — keep one persistent YouTube broadcast per sheet, and
+tell counter where to watch it.
+
+Why this exists. A stream key is only an ingest address: YouTube makes a
+watchable video for it when a *broadcast* is bound to it. Studio's live
+dashboard creates one automatically for the single key it has selected,
+ends it when the encoder stops, and mints a new URL on the next connect.
+With six encoders on six keys that gives one working sheet and links that
+die on every restart (proved at the club, 15 Oct 2026). The Data API still
+has the two switches the dashboard hides — enableAutoStart and
+enableAutoStop — so a broadcast created here goes live whenever its
+encoder connects and STAYS live across restarts, keeping its URL.
+
+    streamer-youtube auth <channel>      one-time: print a code, you consent
+                                         in a browser as the channel, it
+                                         prints the refresh token line for
+                                         secrets.env
+    streamer-youtube ensure [--dry-run]  per sheet: find the key's stream,
+                                         make/repair its persistent
+                                         broadcast, write the watch URL to
+                                         counter's admin API
+    streamer-youtube status              what YouTube has for each sheet
+
+Runs on the box as a oneshot service + timer (streamer-youtube.timer) after
+boot and every few hours, so a broadcast someone ends in Studio is
+replaced and the Watch-live buttons on counter maintain themselves.
+
+Configuration — club.yaml:
+
+    youtube:
+      privacy: unlisted                 # unlisted | public | private
+      title: "{club} - Sheet {sheet}"   # per-broadcast title
+      channels:
+        - sheets: 1-6                   # one entry per YouTube channel
+          refresh_token: ${YT_REFRESH_TOKEN_A}
+        - sheets: 7-12
+          refresh_token: ${YT_REFRESH_TOKEN_B}
+
+and secrets.env: YT_CLIENT_ID, YT_CLIENT_SECRET (one OAuth client of type
+"TVs and Limited Input devices" in a Google Cloud project with the YouTube
+Data API v3 enabled), YT_REFRESH_TOKEN_* (from `auth`), COUNTER_ADMIN_TOKEN
+(the club's admin key on counter), and the SHEET_N_KEY stream keys the
+compositors already use. Standard library only.
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+
+try:
+    import yaml
+except ImportError:
+    sys.exit("streamer-youtube: python3-yaml is required (apt-get install python3-yaml)")
+
+ETC = os.environ.get("STREAMER_ETC", "/etc/streamer")
+SCOPE = "https://www.googleapis.com/auth/youtube"
+API = "https://www.googleapis.com/youtube/v3"
+TOKEN_URL = "https://oauth2.googleapis.com/token"
+DEVICE_URL = "https://oauth2.googleapis.com/device/code"
+LIVE_STATES = {"created", "ready", "testing", "liveStarting", "live"}
+EX_CONFIG = 78
+
+
+def log(msg):
+    print(f"streamer-youtube: {msg}", flush=True)
+
+
+def die(msg, code=1):
+    print(f"streamer-youtube: ERROR: {msg}", file=sys.stderr, flush=True)
+    sys.exit(code)
+
+
+# ---------------------------------------------------------------- config
+def read_secrets(path):
+    """KEY=value lines; the service also gets them via EnvironmentFile, so
+    the environment wins when both are present."""
+    out = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"')
+    out.update({k: v for k, v in os.environ.items() if k in out or k.startswith(("YT_", "SHEET_", "COUNTER_"))})
+    return out
+
+
+def expand(text, secrets, context):
+    def sub(m):
+        var = m.group(1)
+        if var not in secrets or not secrets[var]:
+            die(f"{context}: ${{{var}}} is not set in secrets.env", EX_CONFIG)
+        return secrets[var]
+    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", sub, str(text))
+
+
+def parse_sheets(spec):
+    spec = str(spec)
+    out = []
+    for part in spec.split(","):
+        part = part.strip()
+        if "-" in part:
+            lo, hi = part.split("-", 1)
+            out.extend(range(int(lo), int(hi) + 1))
+        elif part:
+            out.append(int(part))
+    return out
+
+
+def load_config():
+    club_path = os.path.join(ETC, "club.yaml")
+    if not os.path.exists(club_path):
+        die(f"{club_path} not found", EX_CONFIG)
+    with open(club_path) as f:
+        club = yaml.safe_load(f) or {}
+    yt = club.get("youtube")
+    if not yt:
+        die("club.yaml has no 'youtube:' section — nothing to do", EX_CONFIG)
+    secrets = read_secrets(os.path.join(ETC, "secrets.env"))
+    for k in ("YT_CLIENT_ID", "YT_CLIENT_SECRET"):
+        if not secrets.get(k):
+            die(f"{k} is not set in secrets.env", EX_CONFIG)
+    channels = []
+    for i, ch in enumerate(yt.get("channels") or []):
+        sheets = parse_sheets(ch.get("sheets", ""))
+        if not sheets:
+            die(f"youtube.channels[{i}]: 'sheets' is required (e.g. 1-6)", EX_CONFIG)
+        channels.append({
+            "index": i,
+            "sheets": sheets,
+            "refresh_token": expand(ch.get("refresh_token", ""), secrets,
+                                    f"youtube.channels[{i}].refresh_token")
+                             if ch.get("refresh_token") else "",
+        })
+    if not channels:
+        die("youtube.channels is empty", EX_CONFIG)
+    return {
+        "club": club.get("club") or die("club.yaml: 'club' is required", EX_CONFIG),
+        "counter_server": (club.get("counter_server") or "").rstrip("/"),
+        "privacy": yt.get("privacy", "unlisted"),
+        "title": yt.get("title", "{club} - Sheet {sheet}"),
+        "channels": channels,
+        "secrets": secrets,
+    }
+
+
+# ------------------------------------------------------------------ http
+def http(method, url, body=None, token=None, form=False, ok=(200, 201, 204)):
+    data = None
+    headers = {"Accept": "application/json"}
+    if body is not None:
+        if form:
+            data = urllib.parse.urlencode(body).encode()
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+        else:
+            data = json.dumps(body).encode()
+            headers["Content-Type"] = "application/json"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            raw = r.read()
+            return r.status, (json.loads(raw) if raw else {})
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        try:
+            return e.code, json.loads(raw)
+        except ValueError:
+            return e.code, {"error": raw.decode(errors="replace")[:300]}
+
+
+def access_token(secrets, refresh_token):
+    status, body = http("POST", TOKEN_URL, {
+        "client_id": secrets["YT_CLIENT_ID"],
+        "client_secret": secrets["YT_CLIENT_SECRET"],
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token",
+    }, form=True)
+    if status != 200 or "access_token" not in body:
+        die(f"token refresh failed ({status}): {body.get('error_description') or body.get('error')} "
+            "— run `streamer-youtube auth <channel>` again")
+    return body["access_token"]
+
+
+def yt_get(token, resource, **params):
+    """GET with page handling; returns all items."""
+    items = []
+    params = {k: v for k, v in params.items() if v is not None}
+    params.setdefault("maxResults", 50)
+    while True:
+        url = f"{API}/{resource}?{urllib.parse.urlencode(params)}"
+        status, body = http("GET", url, token=token)
+        if status != 200:
+            die(f"{resource}.list failed ({status}): {api_error(body)}")
+        items.extend(body.get("items", []))
+        nxt = body.get("nextPageToken")
+        if not nxt:
+            return items
+        params["pageToken"] = nxt
+
+
+def api_error(body):
+    err = body.get("error")
+    if isinstance(err, dict):
+        reasons = ",".join(e.get("reason", "") for e in err.get("errors", []))
+        return f"{err.get('message')} [{reasons}]"
+    return str(err or body)[:300]
+
+
+# ----------------------------------------------------------------- auth
+def cmd_auth(cfg, args):
+    s = cfg["secrets"]
+    status, body = http("POST", DEVICE_URL, {"client_id": s["YT_CLIENT_ID"], "scope": SCOPE}, form=True)
+    if status != 200:
+        die(f"device code request failed ({status}): {body}. The OAuth client must be of type "
+            "'TVs and Limited Input devices'.")
+    print()
+    print(f"  1. On any device open:  {body['verification_url']}")
+    print(f"  2. Enter the code:      {body['user_code']}")
+    print(f"  3. Sign in and, when asked which account, pick the YouTube CHANNEL that")
+    print(f"     carries sheets {args.channel} (a brand channel appears as its own account).")
+    print()
+    print("  waiting for you to finish in the browser…", flush=True)
+    interval = int(body.get("interval", 5))
+    deadline = time.time() + int(body.get("expires_in", 1800))
+    while time.time() < deadline:
+        time.sleep(interval)
+        st, tok = http("POST", TOKEN_URL, {
+            "client_id": s["YT_CLIENT_ID"], "client_secret": s["YT_CLIENT_SECRET"],
+            "device_code": body["device_code"],
+            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+        }, form=True)
+        if st == 200 and "refresh_token" in tok:
+            chans = yt_get(tok["access_token"], "channels", part="snippet", mine="true")
+            name = chans[0]["snippet"]["title"] if chans else "(unknown channel)"
+            print()
+            print(f"  Consented as channel: {name}")
+            print()
+            print("  Add this line to /etc/streamer/secrets.env (and to the club repo's")
+            print("  secrets.env before re-encrypting) — it is a credential, keep it there only:")
+            print()
+            print(f"  YT_REFRESH_TOKEN_{args.channel.upper()}={tok['refresh_token']}")
+            print()
+            return
+        err = tok.get("error")
+        if err == "slow_down":
+            interval += 5
+        elif err not in ("authorization_pending", None):
+            die(f"authorization failed: {err} {tok.get('error_description', '')}")
+    die("timed out waiting for consent")
+
+
+# --------------------------------------------------------------- ensure
+def streams_by_key(token):
+    out = {}
+    for s in yt_get(token, "liveStreams", part="id,snippet,cdn", mine="true"):
+        key = (s.get("cdn", {}).get("ingestionInfo", {}) or {}).get("streamName")
+        if key:
+            out[key] = {"id": s["id"], "title": s["snippet"].get("title", "")}
+    return out
+
+
+def broadcasts_by_stream(token):
+    out = {}
+    for b in yt_get(token, "liveBroadcasts", part="id,snippet,status,contentDetails",
+                    broadcastStatus="all", broadcastType="all"):
+        sid = (b.get("contentDetails") or {}).get("boundStreamId")
+        if sid:
+            out.setdefault(sid, []).append(b)
+    return out
+
+
+def pick_live_broadcast(cands):
+    """The one broadcast on a stream that can still go live, newest first.
+    Completed/revoked ones are history (someone pressed End stream)."""
+    alive = [b for b in cands if b.get("status", {}).get("lifeCycleStatus") in LIVE_STATES]
+    alive.sort(key=lambda b: b.get("snippet", {}).get("scheduledStartTime", ""), reverse=True)
+    return alive[0] if alive else None
+
+
+def create_broadcast(token, title, privacy, stream_id, dry):
+    body = {
+        "snippet": {"title": title,
+                    "scheduledStartTime": datetime.now(timezone.utc).isoformat()},
+        "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": False},
+        "contentDetails": {
+            "enableAutoStart": True,     # go live when the encoder connects
+            "enableAutoStop": False,     # and stay live when it drops: same URL across restarts
+            "enableDvr": True,
+            "recordFromStart": True,
+            "monitorStream": {"enableMonitorStream": False},
+        },
+    }
+    if dry:
+        return {"id": "(dry-run)", "status": {"lifeCycleStatus": "ready", "privacyStatus": privacy}}
+    st, b = http("POST", f"{API}/liveBroadcasts?part=snippet,status,contentDetails", body, token=token)
+    if st not in (200, 201):
+        die(f"liveBroadcasts.insert failed ({st}): {api_error(b)}")
+    st, bound = http("POST", f"{API}/liveBroadcasts/bind?id={b['id']}&streamId={stream_id}&part=id,contentDetails",
+                     None, token=token)
+    if st != 200:
+        die(f"liveBroadcasts.bind failed ({st}): {api_error(bound)}")
+    return b
+
+
+def repair_broadcast(token, b, dry):
+    """An existing broadcast (e.g. one Studio made) with auto-stop on would
+    end at the next encoder restart; turn the switches our way."""
+    cd = b.get("contentDetails", {})
+    if cd.get("enableAutoStart") is True and cd.get("enableAutoStop") is False:
+        return False
+    if dry:
+        return True
+    cd = {k: v for k, v in cd.items()
+          if k not in ("boundStreamId", "boundStreamLastUpdateTimeMs")}  # read-only
+    cd["enableAutoStart"] = True
+    cd["enableAutoStop"] = False
+    cd["monitorStream"] = {"enableMonitorStream": False}  # auto-start needs the monitor off
+    st, r = http("PUT", f"{API}/liveBroadcasts?part=contentDetails",
+                 {"id": b["id"], "contentDetails": cd}, token=token)
+    if st != 200:
+        log(f"  could not update auto-start/stop on {b['id']} ({st}): {api_error(r)}")
+        return False
+    return True
+
+
+def tell_counter(cfg, sheet, url, dry):
+    tok = cfg["secrets"].get("COUNTER_ADMIN_TOKEN")
+    if not cfg["counter_server"] or not tok:
+        return "no counter_server/COUNTER_ADMIN_TOKEN — not written"
+    if dry:
+        return "would write"
+    st, body = http("PUT", f"{cfg['counter_server']}/api/a/{tok}/sheets/{sheet}", {"watch_url": url})
+    return "written" if st == 200 else f"counter said {st}: {body.get('error', body)}"
+
+
+def cmd_ensure(cfg, args):
+    dry = args.dry_run
+    only = set(parse_sheets(args.sheets)) if args.sheets else None
+    problems = 0
+    for ch in cfg["channels"]:
+        if not ch["refresh_token"]:
+            log(f"channel {ch['index']} (sheets {ch['sheets']}): no refresh token — run `auth` first")
+            problems += 1
+            continue
+        token = access_token(cfg["secrets"], ch["refresh_token"])
+        streams = streams_by_key(token)
+        bcasts = broadcasts_by_stream(token)
+        for n in ch["sheets"]:
+            if only and n not in only:
+                continue
+            key = cfg["secrets"].get(f"SHEET_{n}_KEY", "")
+            if not key:
+                log(f"sheet {n}: SHEET_{n}_KEY not set — skipped")
+                problems += 1
+                continue
+            stream = streams.get(key)
+            if not stream:
+                log(f"sheet {n}: no stream on this channel uses SHEET_{n}_KEY — wrong channel, or key regenerated")
+                problems += 1
+                continue
+            b = pick_live_broadcast(bcasts.get(stream["id"], []))
+            if b:
+                what = "repaired" if repair_broadcast(token, b, dry) else "ok"
+            else:
+                title = cfg["title"].format(club=cfg["club"], sheet=n)
+                b = create_broadcast(token, title, cfg["privacy"], stream["id"], dry)
+                what = "created"
+            url = f"https://www.youtube.com/watch?v={b['id']}"
+            wrote = tell_counter(cfg, n, url, dry)
+            log(f"sheet {n:>2}: {what:<8} {b['status'].get('lifeCycleStatus', '?'):<12} "
+                f"{b['status'].get('privacyStatus', '?'):<8} {url}  [{wrote}]")
+    if problems:
+        sys.exit(1)
+
+
+def cmd_status(cfg, args):
+    for ch in cfg["channels"]:
+        if not ch["refresh_token"]:
+            log(f"channel {ch['index']} (sheets {ch['sheets']}): no refresh token")
+            continue
+        token = access_token(cfg["secrets"], ch["refresh_token"])
+        chans = yt_get(token, "channels", part="snippet", mine="true")
+        log(f"channel: {chans[0]['snippet']['title'] if chans else '?'}  (sheets {ch['sheets']})")
+        streams = streams_by_key(token)
+        bcasts = broadcasts_by_stream(token)
+        for n in ch["sheets"]:
+            key = cfg["secrets"].get(f"SHEET_{n}_KEY", "")
+            stream = streams.get(key) if key else None
+            if not stream:
+                print(f"  sheet {n:>2}: {'no key' if not key else 'key not on this channel'}")
+                continue
+            b = pick_live_broadcast(bcasts.get(stream["id"], []))
+            if not b:
+                print(f"  sheet {n:>2}: stream '{stream['title']}' — NO live-capable broadcast")
+                continue
+            cd = b.get("contentDetails", {})
+            print(f"  sheet {n:>2}: {b['status'].get('lifeCycleStatus'):<12} {b['status'].get('privacyStatus'):<8} "
+                  f"autostart={cd.get('enableAutoStart')} autostop={cd.get('enableAutoStop')}  "
+                  f"https://www.youtube.com/watch?v={b['id']}")
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description="persistent YouTube broadcasts per sheet")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    a = sub.add_parser("auth", help="one-time consent for one channel; prints the refresh-token line")
+    a.add_argument("channel", help="letter/name for the token variable, e.g. A -> YT_REFRESH_TOKEN_A")
+    e = sub.add_parser("ensure", help="make/repair broadcasts and write watch URLs to counter")
+    e.add_argument("--sheets", help="limit to these sheets, e.g. 1-6 or 2,4")
+    e.add_argument("--dry-run", action="store_true")
+    sub.add_parser("status", help="show what YouTube has for each sheet")
+    args = p.parse_args(argv)
+    cfg = load_config()
+    {"auth": cmd_auth, "ensure": cmd_ensure, "status": cmd_status}[args.cmd](cfg, args)
+
+
+if __name__ == "__main__":
+    main()

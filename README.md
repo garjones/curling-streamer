@@ -159,14 +159,48 @@ from home. `start`, then `survive` (SIGKILLs the compositor; you confirm
 in YouTube Studio that the broadcast kept its watch URL), then `stop`,
 which restores the club's own config. Run `stop` before the box travels.
 
-## YouTube notes (verified Aug 2026 — see HANDOFF.md §3.3)
+## YouTube notes (rewritten 15 Oct 2026 from the club)
 
-10 active streams per channel, 3 per stream key → twelve sheets = two
-channels, six keys each. A phone number verifies only 2 channels/year.
-First-time live enablement takes 24 h. **Disable auto-stop on every
-broadcast** — otherwise an encoder blip mints a new watch URL and kills
-every embed; verify by killing `streamer@N` and watching the broadcast
-survive. Keys go in `secrets.env` only.
+About 10 concurrent live streams per channel → twelve sheets = two
+channels, six keys each (both can be brand channels on one Google
+account). First-time live enablement takes 24 h. Keys go in
+`secrets.env` only.
+
+**A key is not a broadcast.** YouTube makes a watchable video for a key
+only when a *broadcast* is bound to it. The Studio dashboard does that by
+itself for the one key it has selected, ends the broadcast when the
+encoder stops, and mints a new URL on the next connect — so with six
+encoders you get one working sheet and links that die on every restart
+(what we found at the club). The current Studio no longer shows the
+auto-start/auto-stop switches, but the Data API still has them, and
+`bin/streamer-youtube` uses them:
+
+- `streamer-youtube ensure` — for each sheet on this box: find the stream
+  whose key is `SHEET_N_KEY`, find its live-capable broadcast or create
+  one with **auto-start on, auto-stop off** (bound, unlisted by default,
+  not made for kids), repair a Studio-made one the same way, and write
+  the watch URL to counter's admin API so the "Watch live" buttons
+  maintain themselves. A broadcast made this way goes live when the
+  encoder connects and keeps its URL across restarts; it only ends when
+  someone presses End stream in Studio, after which the next `ensure`
+  makes a fresh one.
+- `streamer-youtube.timer` runs `ensure` two minutes after boot and every
+  four hours; `streamer-deploy` also kicks it after a deploy. The unit is
+  inactive unless `club.yaml` has a `youtube:` section (same
+  `ConditionFileNotEmpty` trick as the renderer, on `youtube.env`).
+- `streamer-youtube auth A` — one-time per channel: prints a code, you
+  consent in a browser *as that brand channel*, it prints the
+  `YT_REFRESH_TOKEN_A=` line for `secrets.env`. Needs a Google Cloud
+  project with the YouTube Data API v3 enabled, an OAuth client of type
+  **TVs and Limited Input devices** (`YT_CLIENT_ID`/`YT_CLIENT_SECRET`),
+  and the consent screen set to **In production** — a "Testing" app's
+  refresh tokens expire after seven days.
+- `streamer-youtube status` — what YouTube has per sheet, with the two
+  switches, for when something looks off.
+
+Quota: an `ensure` pass is a handful of units per sheet against a 10,000
+units/day default; creating a broadcast costs ~100. Nothing here polls
+YouTube between runs.
 
 ## Operational model (the volunteer at 8pm on a Tuesday)
 

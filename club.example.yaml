@@ -6,7 +6,7 @@
 # in /etc/streamer/secrets.env (mode 600) and are referenced as ${VARS}.
 
 club: exampleton              # counter club slug; also names your streams
-counter_server: https://curling.cam   # remove line entirely if you
+counter_server: https://counter.gareth.live   # remove line entirely if you
                               # do not use the counter scorebug
 canvas: 1920x1080             # output canvas per sheet (1280x720 also fine)
 fps: 30
@@ -35,6 +35,18 @@ sponsor_image: /etc/streamer/sponsor.png   # remove line for no rail/panel.
                               # sponsors there, nothing on the box restarts.
                               # Needs counter_server and a 16:9 slot (quad).
 destination_default: rtmp://a.rtmp.youtube.com/live2
+
+# Optional: let the box keep one persistent YouTube broadcast per sheet and
+# write each sheet's watch URL to counter (README "YouTube notes"). Remove
+# the whole section for a club that manages broadcasts by hand.
+# youtube:
+#   privacy: unlisted                 # unlisted | public | private
+#   title: "{club} - Sheet {sheet}"
+#   channels:                         # one entry per YouTube channel
+#     - sheets: 1-6
+#       refresh_token: ${YT_REFRESH_TOKEN_A}   # from: streamer-youtube auth A
+#     - sheets: 7-12
+#       refresh_token: ${YT_REFRESH_TOKEN_B}
 
 # One entry per sheet. Ask each camera for its DEFAULT stream — no query
 # parameters. Old cameras encode once per unique stream configuration;
