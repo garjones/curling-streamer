@@ -169,7 +169,11 @@ def load_config():
 # ------------------------------------------------------------------ http
 def http(method, url, body=None, token=None, form=False, ok=(200, 201, 204)):
     data = None
-    headers = {"Accept": "application/json"}
+    # A named User-Agent: Cloudflare's Browser Integrity Check (on by
+    # default for the zone in front of counter) answers urllib's default
+    # "Python-urllib/3.x" with a 403 error 1010 and the advice "do not retry".
+    headers = {"Accept": "application/json",
+               "User-Agent": "streamer-youtube/1 (+https://curling.cam)"}
     if body is not None:
         if form:
             data = urllib.parse.urlencode(body).encode()
@@ -332,6 +336,15 @@ def repair_broadcast(token, b, dry):
     cd = b.get("contentDetails", {})
     if cd.get("enableAutoStart") is True and cd.get("enableAutoStop") is False:
         return False
+    if b["status"].get("lifeCycleStatus") in ("liveStarting", "live", "testing"):
+        # YouTube refuses to change these switches on a broadcast that is on
+        # air (enableMonitorStreamModificationNotAllowed). Leave it: if its
+        # auto-stop ends it at the next encoder restart, the following
+        # `ensure` (boot + 2 min, then every 4 h) creates a replacement
+        # with the switches right, and tells counter the new URL.
+        log(f"  {b['id']} is on air with auto-stop on; cannot change that while live — "
+            f"a replacement will be created after it ends")
+        return False
     if dry:
         return True
     cd = {k: v for k, v in cd.items()
@@ -354,7 +367,10 @@ def tell_counter(cfg, sheet, url, dry):
     if dry:
         return "would write"
     st, body = http("PUT", f"{cfg['counter_server']}/api/a/{tok}/sheets/{sheet}", {"watch_url": url})
-    return "written" if st == 200 else f"counter said {st}: {body.get('error', body)}"
+    if st == 200:
+        return "written"
+    why = body.get("error") or body.get("title") or str(body)
+    return f"counter said {st}: {str(why)[:120]}"
 
 
 def cmd_ensure(cfg, args):
