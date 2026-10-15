@@ -6,7 +6,7 @@
 # in /etc/streamer/secrets.env (mode 600) and are referenced as ${VARS}.
 
 club: exampleton              # counter club slug; also names your streams
-counter_server: https://counter.gareth.live   # remove line entirely if you
+counter_server: https://curling.cam   # remove line entirely if you
                               # do not use the counter scorebug
 canvas: 1920x1080             # output canvas per sheet (1280x720 also fine)
 fps: 30

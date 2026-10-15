@@ -37,7 +37,7 @@ is screenshotted into rail-NN.fifo whenever the club's rail revision changes
 {"type":"rail","rev":N} on the same socket). Scores change often and
 sponsors rarely, so the bug is always queued ahead of the rail.
 
-Run:  python3 counter_renderer.py --server https://counter.gareth.live --club kelowna [--rail]
+Run:  python3 counter_renderer.py --server https://curling.cam --club kelowna [--rail]
 
 Standard library only. Needs Chromium (env COUNTER_CHROMIUM) and ffmpeg on
 PATH.
@@ -325,7 +325,7 @@ def parse_sheets(spec):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Counter scorebug renderer")
-    parser.add_argument("--server", default="https://counter.gareth.live")
+    parser.add_argument("--server", default="https://curling.cam")
     parser.add_argument("--club", required=True, help="club slug, e.g. kelowna")
     parser.add_argument("--fifo-dir", default="/run/counter",
                         help="where the bug-NN.fifo pipes live")
