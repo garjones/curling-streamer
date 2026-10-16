@@ -308,59 +308,81 @@ def pick_live_broadcast(cands):
     return alive[0] if alive else None
 
 
-def create_broadcast(token, title, privacy, stream_id, dry):
+def create_broadcast(token, title, privacy, stream_id, auto_start, dry):
     body = {
         "snippet": {"title": title,
                     "scheduledStartTime": datetime.now(timezone.utc).isoformat()},
         "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": False},
         "contentDetails": {
-            "enableAutoStart": True,     # go live when the encoder connects
-            "enableAutoStop": False,     # and stay live when it drops: same URL across restarts
+            # auto-start when the encoder is not streaming yet: YouTube starts
+            # the broadcast on the stream's inactive->active edge. When the
+            # encoder is already on air there is no edge, and a broadcast with
+            # auto-start set refuses a manual transition (invalidTransition),
+            # so then it is created with auto-start OFF and go_live() starts it.
+            "enableAutoStart": auto_start,
+            "enableAutoStop": False,     # stay live when the encoder drops: same URL across restarts
             "enableDvr": True,
             "recordFromStart": True,
             "monitorStream": {"enableMonitorStream": False},
         },
     }
     if dry:
-        return {"id": "(dry-run)", "status": {"lifeCycleStatus": "ready", "privacyStatus": privacy}}
+        return {"id": "(dry-run)", "status": {"lifeCycleStatus": "ready", "privacyStatus": privacy},
+                "contentDetails": body["contentDetails"]}
     st, b = http("POST", f"{API}/liveBroadcasts?part=snippet,status,contentDetails", body, token=token)
     if st not in (200, 201):
         die(f"liveBroadcasts.insert failed ({st}): {api_error(b)}")
-    st, bound = http("POST", f"{API}/liveBroadcasts/bind?id={b['id']}&streamId={stream_id}&part=id,contentDetails",
-                     None, token=token)
+    st, bound = http("POST", f"{API}/liveBroadcasts/bind?id={b['id']}&streamId={stream_id}"
+                     "&part=id,status,contentDetails", None, token=token)
     if st != 200:
         die(f"liveBroadcasts.bind failed ({st}): {api_error(bound)}")
+    b["status"] = bound.get("status", b["status"])            # created -> ready
+    b["contentDetails"] = bound.get("contentDetails", b["contentDetails"])
     return b
 
 
-def repair_broadcast(token, b, dry):
-    """An existing broadcast (e.g. one Studio made) with auto-stop on would
-    end at the next encoder restart; turn the switches our way."""
+ON_AIR = ("liveStarting", "live", "testing")
+
+
+def set_switches(token, b, auto_start, dry):
+    """auto-stop off always; auto-start as asked; monitor off (auto-start
+    needs it off, and it is useless unattended). Returns True if changed."""
     cd = b.get("contentDetails", {})
-    if cd.get("enableAutoStart") is True and cd.get("enableAutoStop") is False:
+    if (cd.get("enableAutoStart") is auto_start and cd.get("enableAutoStop") is False
+            and (cd.get("monitorStream") or {}).get("enableMonitorStream") is False):
         return False
-    if b["status"].get("lifeCycleStatus") in ("liveStarting", "live", "testing"):
-        # YouTube refuses to change these switches on a broadcast that is on
-        # air (enableMonitorStreamModificationNotAllowed). Leave it: if its
+    if b["status"].get("lifeCycleStatus") in ON_AIR:
+        if cd.get("enableAutoStop") is False:
+            return False  # live and will stay live; auto-start no longer matters
+        # YouTube refuses to change these on a broadcast that is on air
+        # (enableMonitorStreamModificationNotAllowed). Leave it: if its
         # auto-stop ends it at the next encoder restart, the following
         # `ensure` (boot + 2 min, then every 4 h) creates a replacement
         # with the switches right, and tells counter the new URL.
-        log(f"  {b['id']} is on air with auto-stop on; cannot change that while live — "
-            f"a replacement will be created after it ends")
+        log(f"  {b['id']} is on air with the wrong switches; cannot change them while live — "
+            f"a replacement will be created if it ends")
         return False
     if dry:
         return True
     cd = {k: v for k, v in cd.items()
           if k not in ("boundStreamId", "boundStreamLastUpdateTimeMs")}  # read-only
-    cd["enableAutoStart"] = True
+    cd["enableAutoStart"] = auto_start
     cd["enableAutoStop"] = False
-    cd["monitorStream"] = {"enableMonitorStream": False}  # auto-start needs the monitor off
+    cd["monitorStream"] = {"enableMonitorStream": False}
     st, r = http("PUT", f"{API}/liveBroadcasts?part=contentDetails",
                  {"id": b["id"], "contentDetails": cd}, token=token)
     if st != 200:
         log(f"  could not update auto-start/stop on {b['id']} ({st}): {api_error(r)}")
         return False
+    b["contentDetails"] = r.get("contentDetails", cd)
     return True
+
+
+def repair_broadcast(token, b, stream, dry):
+    """An existing broadcast (e.g. one Studio made) with auto-stop on would
+    end at the next encoder restart; turn the switches our way. Auto-start
+    is wanted only while the encoder is NOT streaming (see create_broadcast)."""
+    return set_switches(token, b, auto_start=not stream.get("active"), dry=dry)
 
 
 def set_privacy(token, b, privacy, dry):
@@ -384,11 +406,16 @@ def set_privacy(token, b, privacy, dry):
 
 def go_live(token, b, stream, dry):
     """Auto-start only fires when the bound stream *becomes* active. A
-    broadcast created (or repaired) while the encoder was already
+    broadcast created (or adopted) while the encoder was already
     streaming sits in 'ready' — viewers see "Waiting for …" — until the
-    next encoder restart. So if the stream is active now, start it now."""
+    next encoder restart. So if the stream is active now, start it now.
+    A broadcast with auto-start set refuses this (invalidTransition), so
+    auto-start is switched off first; once live it is not needed again."""
     if b["status"].get("lifeCycleStatus") != "ready" or not stream.get("active"):
         return False
+    if (b.get("contentDetails") or {}).get("enableAutoStart") is not False:
+        if not set_switches(token, b, auto_start=False, dry=dry) and not dry:
+            return False
     if dry:
         return True
     st, r = http("POST", f"{API}/liveBroadcasts/transition?"
@@ -442,12 +469,13 @@ def cmd_ensure(cfg, args):
                 continue
             b = pick_live_broadcast(bcasts.get(stream["id"], []))
             if b:
-                fixed = repair_broadcast(token, b, dry)
+                fixed = repair_broadcast(token, b, stream, dry)
                 fixed = set_privacy(token, b, cfg["privacy"], dry) or fixed
                 what = "repaired" if fixed else "ok"
             else:
                 title = cfg["title"].format(club=cfg["club"], sheet=n)
-                b = create_broadcast(token, title, cfg["privacy"], stream["id"], dry)
+                b = create_broadcast(token, title, cfg["privacy"], stream["id"],
+                                     auto_start=not stream.get("active"), dry=dry)
                 what = "created"
             if go_live(token, b, stream, dry):
                 what += "+live"
