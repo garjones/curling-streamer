@@ -395,13 +395,22 @@ def set_title(token, b, title, dry):
         return False
     if dry:
         return True
-    body = {"id": b["id"], "snippet": {"title": title,
-                                      "scheduledStartTime": sn.get("scheduledStartTime")
-                                      or datetime.now(timezone.utc).isoformat()}}
-    st, r = http("PUT", f"{API}/liveBroadcasts?part=snippet", body, token=token)
-    if st != 200:
+    # Title only: a live broadcast refuses any scheduledStartTime in the
+    # update (scheduledStartTimeModificationNotAllowed), even its own. If
+    # the API insists on the field (a broadcast that is not yet live), try
+    # again carrying the broadcast's existing value.
+    attempts = [{"title": title}]
+    if sn.get("scheduledStartTime"):
+        attempts.append({"title": title, "scheduledStartTime": sn["scheduledStartTime"]})
+    for snippet in attempts:
+        st, r = http("PUT", f"{API}/liveBroadcasts?part=snippet",
+                     {"id": b["id"], "snippet": snippet}, token=token)
+        if st == 200:
+            break
+    else:
         log(f"  could not retitle {b['id']} ({st}): {api_error(r)}")
         return False
+    body = {"snippet": snippet}
     b["snippet"] = r.get("snippet", body["snippet"])
     return True
 
