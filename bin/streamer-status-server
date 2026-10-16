@@ -93,6 +93,14 @@ def encoder_clock(n):
     mins = max((st.get("t", 0) - st.get("started", 0)) / 60, 0.5)
     rate = lag / mins
     speed = st.get("speed", "?")
+    if lag < -5:
+        # The video clock is AHEAD of the wall clock: timestamps are being
+        # stamped faster than real time (seen after a renderer restart
+        # that swapped a FIFO writer under a running ffmpeg). YouTube
+        # buffers forever waiting for the clock to catch up. Only a
+        # restart of this sheet's compositor fixes it.
+        return ("bad", f"{-lag:.0f} s AHEAD of the clock — timestamps broken; "
+                       f"systemctl restart streamer@{n}")
     if lag < 2:
         return ("ok", f"on time ({speed})")
     if lag < 5:

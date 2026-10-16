@@ -256,7 +256,11 @@ YouTube between runs.
   keeps repeating the frame) and catches up when the link returns; the
   cameras are local, so the picture never stops.
 - A camera gone, or the renderer restarted? The compositor **exits** and
-  systemd restarts it 5 s later, reconnected. That is a short blip on
+  systemd restarts it 5 s later, reconnected. (The renderer makes NEW
+  FIFOs on every start so this actually happens: reusing the old pipe
+  let a new renderer attach to a still-running ffmpeg before it saw EOF,
+  and that ffmpeg's timeline ran away — 15 Oct 2026, "N s AHEAD of the
+  clock" on the status page.) That is a short blip on
   the broadcast, which is why auto-stop must be off (YouTube notes).
   Until 6 Oct 2026 this README claimed streams "recover on their own";
   they did not — the overlay kept the tile's last frame for the rest of

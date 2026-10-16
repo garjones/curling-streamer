@@ -182,11 +182,20 @@ class Renderer:
             # Until the first screenshot lands, feed black so streams can start.
             self.frames.setdefault(key, bytes(FRAME_BYTES))
             path = self.fifo_path(kind, sheet)
-            if os.path.exists(path):
-                if not stat.S_ISFIFO(os.stat(path).st_mode):
+            # Always a NEW pipe. A renderer that reuses the old FIFO can
+            # attach to a compositor that is still reading it, before that
+            # ffmpeg has seen the old writer's EOF: the compositor carries on
+            # with a writer swapped under it and its timeline goes wrong
+            # (15 Oct 2026: six sheets stamped 60x faster than real time,
+            # YouTube buffering). A fresh inode leaves the old pipe with no
+            # writer, so every compositor reads EOF, exits (eof_action=
+            # endall) and is restarted by systemd onto this pipe — the
+            # documented "renderer restarted => compositor reconnects".
+            if os.path.lexists(path):
+                if not stat.S_ISFIFO(os.lstat(path).st_mode):
                     raise SystemExit(f"{path} exists and is not a FIFO")
-            else:
-                os.mkfifo(path)
+                os.unlink(path)
+            os.mkfifo(path)
             threading.Thread(target=self.writer, args=(key,), daemon=True).start()
 
     # -- one writer thread per tile: repeat the latest frame at ~1 fps -----
