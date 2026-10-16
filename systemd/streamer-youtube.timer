@@ -1,10 +1,10 @@
 [Unit]
-Description=Run streamer-youtube ensure after boot and every few hours
+Description=Run streamer-youtube ensure after boot and every 15 minutes
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=4h
-RandomizedDelaySec=5min
+OnUnitActiveSec=15min
+RandomizedDelaySec=2min
 Persistent=true
 
 [Install]

@@ -185,22 +185,29 @@ auto-start/auto-stop switches, but the Data API still has them, and
   the encoder connects and keeps its URL across restarts (proven 15 Oct
   2026: `systemctl restart streamer@1`, same URL, back live); it only
   ends when someone presses End stream in Studio, after which the next
-  `ensure` makes a fresh one. Two YouTube rules shape this: auto-start
-  only fires on the stream's inactive→active edge, so a broadcast made
-  while the encoder was already streaming would sit at "Waiting for …"
-  until the next restart; and a broadcast with auto-start set refuses a
-  manual transition (`invalidTransition`). So `ensure` creates with
-  auto-start ON only when the stream is idle, and otherwise creates (or
-  adopts) with auto-start OFF and starts the broadcast itself
-  (`liveBroadcasts.transition` → live; "+live" in the output). Once
-  live with auto-stop off, a broadcast rides out encoder restarts on
-  its own — auto-start is never needed again. YouTube will not let the auto-start/stop
+  `ensure` makes a fresh one. Three YouTube rules shape this (all met
+  the hard way, 15 Oct 2026): auto-start only fires on the stream's
+  inactive→active edge, so a broadcast made while the encoder was
+  already streaming sits at "Waiting for …" until the next restart; a
+  broadcast with auto-start set refuses a manual transition
+  (`invalidTransition`); and auto-start cannot be changed once the
+  broadcast is ready (`enableAutoStartModificationNotAllowed`). So
+  `ensure` creates with auto-start ON only when the stream is idle, and
+  with auto-start OFF when the encoder is already on air, then starts
+  that one itself (`liveBroadcasts.transition` → live; "+live"). A
+  waiting broadcast that already has auto-start on (one Studio made, or
+  one from before this rule) gets the edge it is listening for: `ensure`
+  restarts that sheet's encoder ("+bounced"; ~10 s off a stream nobody
+  can watch yet; `--no-bounce` forbids it). Once live with auto-stop
+  off, a broadcast rides out encoder restarts on its own — auto-start
+  is never needed again. The timer runs every 15 minutes (a few quota
+  units a pass) so none of these states lasts long. YouTube will not let the auto-start/stop
   switches change on a broadcast that is on air, so a Studio-made one
   found live is left alone (and said so) until it ends — a replacement
   follows at the next run. Requests to counter carry a named User-Agent;
   Cloudflare's Browser Integrity Check bans urllib's default one.
 - `streamer-youtube.timer` runs `ensure` two minutes after boot and every
-  four hours; `streamer-deploy` also kicks it after a deploy. The unit is
+  15 minutes; `streamer-deploy` also kicks it after a deploy. The unit is
   inactive unless `club.yaml` has a `youtube:` section (same
   `ConditionFileNotEmpty` trick as the renderer, on `youtube.env`).
 - `streamer-youtube auth A` — one-time per channel: prints a code, you
