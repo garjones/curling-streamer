@@ -183,6 +183,8 @@ def http(method, url, body=None, token=None, form=False, ok=(200, 201, 204)):
             headers["Content-Type"] = "application/json"
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    if data is None and method in ("POST", "PUT"):
+        data = b""  # a bodiless POST (liveBroadcasts.transition) still needs Content-Length: 0
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
@@ -280,10 +282,11 @@ def cmd_auth(cfg, args):
 # --------------------------------------------------------------- ensure
 def streams_by_key(token):
     out = {}
-    for s in yt_get(token, "liveStreams", part="id,snippet,cdn", mine="true"):
+    for s in yt_get(token, "liveStreams", part="id,snippet,cdn,status", mine="true"):
         key = (s.get("cdn", {}).get("ingestionInfo", {}) or {}).get("streamName")
         if key:
-            out[key] = {"id": s["id"], "title": s["snippet"].get("title", "")}
+            out[key] = {"id": s["id"], "title": s["snippet"].get("title", ""),
+                        "active": (s.get("status") or {}).get("streamStatus") == "active"}
     return out
 
 
@@ -379,6 +382,25 @@ def set_privacy(token, b, privacy, dry):
     return True
 
 
+def go_live(token, b, stream, dry):
+    """Auto-start only fires when the bound stream *becomes* active. A
+    broadcast created (or repaired) while the encoder was already
+    streaming sits in 'ready' — viewers see "Waiting for …" — until the
+    next encoder restart. So if the stream is active now, start it now."""
+    if b["status"].get("lifeCycleStatus") != "ready" or not stream.get("active"):
+        return False
+    if dry:
+        return True
+    st, r = http("POST", f"{API}/liveBroadcasts/transition?"
+                 + urllib.parse.urlencode({"broadcastStatus": "live", "id": b["id"], "part": "status"}),
+                 token=token)
+    if st != 200:
+        log(f"  could not start {b['id']} ({st}): {api_error(r)} — the timer will retry")
+        return False
+    b["status"]["lifeCycleStatus"] = r.get("status", {}).get("lifeCycleStatus", "live")
+    return True
+
+
 def tell_counter(cfg, sheet, url, dry):
     tok = cfg["secrets"].get("COUNTER_ADMIN_TOKEN")
     if not cfg["counter_server"] or not tok:
@@ -427,6 +449,8 @@ def cmd_ensure(cfg, args):
                 title = cfg["title"].format(club=cfg["club"], sheet=n)
                 b = create_broadcast(token, title, cfg["privacy"], stream["id"], dry)
                 what = "created"
+            if go_live(token, b, stream, dry):
+                what += "+live"
             url = f"https://www.youtube.com/watch?v={b['id']}"
             wrote = tell_counter(cfg, n, url, dry)
             log(f"sheet {n:>2}: {what:<8} {b['status'].get('lifeCycleStatus', '?'):<12} "

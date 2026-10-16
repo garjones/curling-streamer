@@ -182,9 +182,15 @@ auto-start/auto-stop switches, but the Data API still has them, and
   set an existing broadcast's privacy to match `club.yaml` if it differs,
   and write the watch URL to counter's admin API so the "Watch live"
   buttons maintain themselves. A broadcast made this way goes live when
-  the encoder connects and keeps its URL across restarts; it only ends
-  when someone presses End stream in Studio, after which the next
-  `ensure` makes a fresh one. YouTube will not let the auto-start/stop
+  the encoder connects and keeps its URL across restarts (proven 15 Oct
+  2026: `systemctl restart streamer@1`, same URL, back live); it only
+  ends when someone presses End stream in Studio, after which the next
+  `ensure` makes a fresh one. YouTube's auto-start only fires when the
+  stream *becomes* active, so a broadcast made while the encoder was
+  already streaming would sit at "Waiting for …" until the next restart;
+  `ensure` therefore starts a `ready` broadcast itself whenever its
+  stream is active (`liveBroadcasts.transition` → live; "+live" in the
+  output). YouTube will not let the auto-start/stop
   switches change on a broadcast that is on air, so a Studio-made one
   found live is left alone (and said so) until it ends — a replacement
   follows at the next run. Requests to counter carry a named User-Agent;
