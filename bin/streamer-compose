@@ -39,6 +39,7 @@ useless" — the unit's RestartPreventExitStatus stops the restart loop so
 
 import os
 import sys
+import time
 
 EX_CONFIG = 78
 
@@ -319,7 +320,80 @@ def main():
     print(f"streamer-compose: sheet {sheet} ({filter_mode} filtering) ->",
           " ".join(c if not c.startswith("rtmp") else "rtmp://…<key>"
                    for c in cmd), flush=True)
+
+    # Production: supervise ffmpeg and publish its progress so the status
+    # page can show whether this sheet's video clock keeps up with the wall
+    # clock — the thing YouTube grades ("video output low") and nothing on
+    # the box showed until 15 Oct 2026. Bench/demo runs (DURATION or
+    # OUTPUT_OVERRIDE set) keep the plain exec.
+    progress_dir = env("PROGRESS_DIR", "/run/streamer")
+    if not duration and not override and os.path.isdir(progress_dir) \
+            and os.access(progress_dir, os.W_OK):
+        cmd += ["-progress", "pipe:1", "-stats_period", "5"]
+        sys.exit(supervise(cmd, os.path.join(progress_dir, f"sheet-{sheet}.json")))
     os.execvp(cmd[0], cmd)
+
+
+def supervise(cmd, state_path):
+    """Run ffmpeg as a child, forward SIGTERM/SIGINT, and keep its latest
+    -progress block in state_path (atomic replace) as JSON with:
+      started     wall time this supervisor started
+      t           wall time of the block
+      out_time_s  video clock (seconds of output produced)
+      lag_s       how far the video clock has fallen behind the wall clock
+                  since the first block (grows => YouTube will starve)
+      speed, fps, frame, drop_frames, dup_frames, bitrate  as ffmpeg says
+    Returns the exit code to leave with."""
+    import json
+    import signal
+    import subprocess
+    started = time.time()
+    child = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+
+    def forward(signum, _frame):
+        try:
+            child.send_signal(signum)
+        except ProcessLookupError:
+            pass
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, forward)
+
+    block, first = {}, None
+    try:
+        for line in child.stdout:
+            k, _, v = line.rstrip("\n").partition("=")
+            if k != "progress":
+                block[k] = v
+                continue
+            now = time.time()
+            try:
+                out_s = int(block.get("out_time_us", "0")) / 1e6
+            except ValueError:
+                out_s = 0.0
+            if first is None and out_s > 0:
+                first = (now, out_s)
+            lag = (now - first[0]) - (out_s - first[1]) if first else 0.0
+            state = {"started": started, "t": now, "out_time_s": out_s,
+                     "lag_s": round(lag, 2)}
+            for key in ("speed", "fps", "frame", "drop_frames", "dup_frames", "bitrate"):
+                if key in block:
+                    state[key] = block[key].strip()
+            tmp = state_path + ".tmp"
+            try:
+                with open(tmp, "w") as f:
+                    json.dump(state, f)
+                os.replace(tmp, state_path)
+            except OSError:
+                pass
+            block = {}
+    finally:
+        rc = child.wait()
+        try:
+            os.unlink(state_path)
+        except OSError:
+            pass
+    # systemd sees the same outcome ffmpeg had (signal exits become 128+n)
+    return rc if rc >= 0 else 128 - rc
 
 
 if __name__ == "__main__":

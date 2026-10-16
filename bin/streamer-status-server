@@ -78,6 +78,28 @@ def load_config():
 GOOD, BAD, WARN = ("#3a9d5d", "#d03b3b", "#eda100")
 
 
+def encoder_clock(n):
+    """What streamer-compose published for this sheet: is the video clock
+    keeping up with the wall clock? Three answers a volunteer can act on."""
+    try:
+        with open(f"/run/streamer/sheet-{n}.json") as f:
+            st = json.load(f)
+    except Exception:
+        return None
+    age = time.time() - st.get("t", 0)
+    if age > 30:
+        return ("stale", f"no progress for {int(age)} s")
+    lag = float(st.get("lag_s", 0))
+    mins = max((st.get("t", 0) - st.get("started", 0)) / 60, 0.5)
+    rate = lag / mins
+    speed = st.get("speed", "?")
+    if lag < 2:
+        return ("ok", f"on time ({speed})")
+    if lag < 5:
+        return ("warn", f"{lag:.1f} s behind, {rate:+.1f} s/min ({speed})")
+    return ("bad", f"{lag:.1f} s behind, {rate:+.1f} s/min ({speed}) — viewers will buffer")
+
+
 def dot(ok, good="OK", bad="DOWN", maybe=None):
     if maybe is not None and ok == "maybe":
         return (f'<span style="color:{WARN}">&#9650;</span> '
@@ -101,9 +123,17 @@ def render():
         for role, host in sorted(s.get("cameras", {}).items()):
             ok = cached(f"c{host}", lambda h=host: tcp_ok(h))
             cams.append(f"{role} {dot(ok, 'reachable', 'unreachable')}")
+        clock = encoder_clock(n) if unit == "active" else None
+        if clock is None:
+            clock_html = '<span class="lbl">—</span>'
+        else:
+            colour = {"ok": GOOD, "warn": WARN, "bad": BAD, "stale": WARN}[clock[0]]
+            mark = "&#9679;" if clock[0] == "ok" else "&#9650;" if clock[0] != "bad" else "&#9632;"
+            clock_html = f'<span style="color:{colour}">{mark}</span> <span class="lbl">{clock[1]}</span>'
         rows.append(
             f"<tr><td>Sheet {n}</td>"
             f"<td>{dot(unit == 'active', 'streaming', unit)}</td>"
+            f"<td>{clock_html}</td>"
             f"<td>{dot(fifo, 'present', 'missing')}</td>"
             f"<td>{' &nbsp; '.join(cams) or '—'}</td></tr>")
 
@@ -139,7 +169,7 @@ def render():
 {time.strftime('%H:%M:%S')}</div>
 <div class="svc">{services}</div>
 <table>
-<tr><th>Sheet</th><th>Stream</th><th>Scorebug pipe</th><th>Cameras</th></tr>
+<tr><th>Sheet</th><th>Stream</th><th>Encoder clock</th><th>Scorebug pipe</th><th>Cameras</th></tr>
 {''.join(rows)}
 </table>
 </body></html>"""

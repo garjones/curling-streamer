@@ -15,6 +15,12 @@ EnvironmentFile=/etc/streamer/sheet-%i.env
 # Stream keys and camera credentials. Keys stay OUT of the command line so
 # they never leak into ps or the journal; ffmpeg receives the URL via exec.
 EnvironmentFile=/etc/streamer/secrets.env
+# /run/streamer/sheet-N.json: ffmpeg's progress, published by
+# streamer-compose for the status page (encoder clock vs wall clock).
+# Shared by every sheet, so never removed when one instance stops.
+RuntimeDirectory=streamer
+RuntimeDirectoryPreserve=yes
+RuntimeDirectoryMode=0755
 ExecStart=/usr/local/bin/streamer-compose
 Restart=always
 RestartSec=5

@@ -21,7 +21,7 @@ Four services, all boring on purpose:
 | `streamer-mediamtx` | [MediaMTX](https://github.com/bluenviron/mediamtx) pulls each camera's **default stream** exactly once and republishes on the LAN. Every consumer — compositors, kiosk TVs, a coach's VLC — reads `rtsp://<box>:8554/cam-N-{home,away}` instead of touching a camera. An old camera therefore ever sees **one client**, which is the structural fix for the identical-streams rule (Axis: identical requests share one encoder instance; different ones don't, and a 2014 SoC runs out fast). |
 | `streamer@N` | One ffmpeg per sheet: decode both cameras, scale, overlay scorebug + sponsor rail, encode (VAAPI on Intel GPU), push RTMP. `systemctl status streamer@7` is the whole debugging story. |
 | `streamer-renderer` | counter's scorebug renderer, vendored verbatim in `renderer/` — one WebSocket to the club (never polling), headless Chromium screenshot on score change, raw RGBA repeated at 1 fps into `/run/counter/bug-NN.fifo` — and, with `sponsor_rail: counter`, counter's sponsor-rail tile into `rail-NN.fifo` whenever the club's rail changes. Why a FIFO and not a PNG: ffmpeg decodes a still image **once** and caches it forever; the pipe is the only way a changing image reaches a running ffmpeg (proved by `renderer/fifo_demo.py`, and again by `tools/demo_stack.sh`). |
-| `streamer-status` | One dark, phone-readable page at `http://<box>:8080/` — per-sheet unit state, FIFO presence, camera reachability. No accounts; being on the club LAN is the credential. |
+| `streamer-status` | One dark, phone-readable page at `http://<box>:8080/` — per-sheet unit state, encoder clock vs wall clock, FIFO presence, camera reachability. No accounts; being on the club LAN is the credential. |
 
 Configuration is **one YAML file** (`/etc/streamer/club.yaml`) plus one
 secrets file (`/etc/streamer/secrets.env`, mode 600 — camera password
@@ -226,7 +226,17 @@ YouTube between runs.
 
 ## Operational model (the volunteer at 8pm on a Tuesday)
 
-- Is it working? `http://<box>:8080/` — green words, red words.
+- Is it working? `http://<box>:8080/` — green words, red words. The
+  **Encoder clock** column is the one YouTube grades: `streamer-compose`
+  runs ffmpeg as a child with `-progress` and publishes each sheet's
+  block to `/run/streamer/sheet-N.json` (video clock, speed, fps,
+  drops, and `lag_s` — how far the video clock has fallen behind the
+  wall clock since the stream started). "on time" is good; "N s behind,
+  +x s/min" means YouTube will report *video output low* and viewers
+  will buffer, whatever the bytes say — a stream can push its full
+  bitrate in real time and still starve YouTube if its timestamps
+  advance slower than the clock (15 Oct 2026: six sheets, every rate
+  measurement on the box perfect, YouTube health bad on all six).
 - One stream down? `systemctl restart streamer@7`.
 - Everything down? Power-cycle the box; every unit is `Restart=always`
   and the whole stack comes up by itself. The UPS exists so a flicker
