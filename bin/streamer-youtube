@@ -287,8 +287,11 @@ def streams_by_key(token):
     for s in yt_get(token, "liveStreams", part="id,snippet,cdn,status", mine="true"):
         key = (s.get("cdn", {}).get("ingestionInfo", {}) or {}).get("streamName")
         if key:
+            st_ = s.get("status") or {}
             out[key] = {"id": s["id"], "title": s["snippet"].get("title", ""),
-                        "active": (s.get("status") or {}).get("streamStatus") == "active"}
+                        "active": st_.get("streamStatus") == "active",
+                        "health": st_.get("healthStatus") or {},
+                        "cdn": s.get("cdn") or {}}
     return out
 
 
@@ -382,6 +385,25 @@ def repair_broadcast(token, b, dry):
     """An existing broadcast (e.g. one Studio made) with auto-stop on would
     end at the next encoder restart; turn that off."""
     return set_switches(token, b, dry)
+
+
+def set_title(token, b, title, dry):
+    """A Studio-made broadcast keeps Studio's title; rename it to the
+    club.yaml template so every sheet reads the same on YouTube."""
+    sn = b.get("snippet", {})
+    if sn.get("title") == title:
+        return False
+    if dry:
+        return True
+    body = {"id": b["id"], "snippet": {"title": title,
+                                      "scheduledStartTime": sn.get("scheduledStartTime")
+                                      or datetime.now(timezone.utc).isoformat()}}
+    st, r = http("PUT", f"{API}/liveBroadcasts?part=snippet", body, token=token)
+    if st != 200:
+        log(f"  could not retitle {b['id']} ({st}): {api_error(r)}")
+        return False
+    b["snippet"] = r.get("snippet", body["snippet"])
+    return True
 
 
 def set_privacy(token, b, privacy, dry):
@@ -482,12 +504,13 @@ def cmd_ensure(cfg, args):
                 problems += 1
                 continue
             b = pick_live_broadcast(bcasts.get(stream["id"], []))
+            title = cfg["title"].format(club=cfg["club"], sheet=n)
             if b:
                 fixed = repair_broadcast(token, b, dry)
                 fixed = set_privacy(token, b, cfg["privacy"], dry) or fixed
+                fixed = set_title(token, b, title, dry) or fixed
                 what = "repaired" if fixed else "ok"
             else:
-                title = cfg["title"].format(club=cfg["club"], sheet=n)
                 b = create_broadcast(token, title, cfg["privacy"], stream["id"],
                                      auto_start=not stream.get("active"), dry=dry)
                 what = "created"
@@ -526,6 +549,17 @@ def cmd_status(cfg, args):
             print(f"  sheet {n:>2}: {b['status'].get('lifeCycleStatus'):<12} {b['status'].get('privacyStatus'):<8} "
                   f"autostart={cd.get('enableAutoStart')} autostop={cd.get('enableAutoStop')}  "
                   f"https://www.youtube.com/watch?v={b['id']}")
+            # YouTube's own verdict on what the encoder is sending — the
+            # detail behind Studio's good/ok/poor, with the reason.
+            h = stream["health"]
+            cdn = stream["cdn"]
+            if h:
+                print(f"            stream: {'active' if stream['active'] else 'inactive'}, "
+                      f"health {h.get('status', '?')}; key expects "
+                      f"{cdn.get('resolution', '?')}@{cdn.get('frameRate', '?')} {cdn.get('ingestionType', '?')}")
+                for issue in h.get("configurationIssues", []):
+                    print(f"              {issue.get('severity', '?'):<7} {issue.get('reason', '?')}: "
+                          f"{issue.get('description', '')}")
 
 
 def main(argv=None):
