@@ -330,11 +330,28 @@ def main():
     if not duration and not override and os.path.isdir(progress_dir) \
             and os.access(progress_dir, os.W_OK):
         cmd += ["-progress", "pipe:1", "-stats_period", "5"]
-        sys.exit(supervise(cmd, os.path.join(progress_dir, f"sheet-{sheet}.json")))
+        sys.exit(supervise(cmd, os.path.join(progress_dir, f"sheet-{sheet}.json"),
+                           watch=[p for p in (fifo, rail_fifo) if p]))
     os.execvp(cmd[0], cmd)
 
 
-def supervise(cmd, state_path):
+# Supervisor guards (seconds). The video clock is a copy of real time; if it
+# runs this far ahead of the wall clock the timestamps are broken and
+# YouTube buffers forever, so end ffmpeg and let systemd start a clean one.
+CLOCK_AHEAD_LIMIT_S = 10.0
+
+
+def fifo_inodes(paths):
+    out = {}
+    for p in paths:
+        try:
+            out[p] = os.stat(p).st_ino
+        except OSError:
+            out[p] = None
+    return out
+
+
+def supervise(cmd, state_path, watch=()):
     """Run ffmpeg as a child, forward SIGTERM/SIGINT, and keep its latest
     -progress block in state_path (atomic replace) as JSON with:
       started     wall time this supervisor started
@@ -348,7 +365,26 @@ def supervise(cmd, state_path):
     import signal
     import subprocess
     started = time.time()
+    # The renderer makes a NEW pipe each time it starts. The design said a
+    # compositor would then hit EOF on its old pipe and exit; on the box's
+    # VAAPI graph ffmpeg does not — it carries on with its timestamps
+    # racing ahead (16 Oct 2026: 30,000 s ahead within minutes, six
+    # sheets, YouTube buffering). So the supervisor watches for it itself:
+    # pipe replaced, or clock running ahead => end ffmpeg, exit, and
+    # systemd starts a fresh compositor on the new pipe.
+    inodes = fifo_inodes(watch)
     child = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+    reason = None
+
+    def stop(why):
+        nonlocal reason
+        if reason is None:
+            reason = why
+            print(f"streamer-compose: {why} — restarting", file=sys.stderr, flush=True)
+            try:
+                child.terminate()
+            except ProcessLookupError:
+                pass
 
     def forward(signum, _frame):
         try:
@@ -386,12 +422,20 @@ def supervise(cmd, state_path):
             except OSError:
                 pass
             block = {}
+            now_inodes = fifo_inodes(watch)
+            for p, ino in inodes.items():
+                if ino is not None and now_inodes.get(p) != ino:
+                    stop(f"{os.path.basename(p)} was replaced (renderer restarted)")
+            if first and lag < -CLOCK_AHEAD_LIMIT_S:
+                stop(f"video clock {-lag:.0f} s ahead of the wall clock")
     finally:
         rc = child.wait()
         try:
             os.unlink(state_path)
         except OSError:
             pass
+    if reason is not None:
+        return 75  # EX_TEMPFAIL: deliberate; Restart=always brings it back
     # systemd sees the same outcome ffmpeg had (signal exits become 128+n)
     return rc if rc >= 0 else 128 - rc
 
