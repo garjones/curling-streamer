@@ -88,9 +88,11 @@ late = frame((237, 161, 0, 255))      # rock yellow
 # compositor — the flip lands mid-recording regardless of startup time.
 with open(path, "wb", buffering=0) as f:
     start = time.time()
+    due = time.monotonic()
     while True:
         f.write(early if time.time() - start < 5 else late)
-        time.sleep(1)
+        due += 1.0   # absolute schedule — see counter_renderer.writer
+        time.sleep(max(0.0, due - time.monotonic()))
 EOF
 echo $! > "${WORK}/fifopy.pid"
 
@@ -105,9 +107,11 @@ early = frame((57, 135, 229, 255))    # counter accent blue
 late = frame((40, 170, 90, 255))      # green
 with open(path, "wb", buffering=0) as f:
     start = time.time()
+    due = time.monotonic()
     while True:
         f.write(early if time.time() - start < 5 else late)
-        time.sleep(1)
+        due += 1.0   # absolute schedule — see counter_renderer.writer
+        time.sleep(max(0.0, due - time.monotonic()))
 RAILEOF
 echo $! >> "${WORK}/fifopy.pid"
 

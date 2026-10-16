@@ -37,7 +37,7 @@ is screenshotted into rail-NN.fifo whenever the club's rail revision changes
 {"type":"rail","rev":N} on the same socket). Scores change often and
 sponsors rarely, so the bug is always queued ahead of the rail.
 
-Run:  python3 counter_renderer.py --server https://curling.cam --club kelowna [--rail]
+Run:  python3 counter_renderer.py --server https://counter.gareth.live --club kelowna [--rail]
 
 Standard library only. Needs Chromium (env COUNTER_CHROMIUM) and ffmpeg on
 PATH.
@@ -200,9 +200,27 @@ class Renderer:
                 # sheet's stream starts.
                 with open(path, "wb", buffering=0) as fifo:
                     log(f"{kind} {sheet}: ffmpeg attached to {path}")
+                    # Pace on an absolute schedule, not "write then sleep":
+                    # the frames carry synthetic timestamps (-framerate 1,
+                    # one second per frame) and ffmpeg's overlay cannot
+                    # release a camera frame until the NEXT tile frame has
+                    # arrived, so the tile's cadence IS the stream's clock.
+                    # "write then sleep(1.0)" runs a few ms per frame slow,
+                    # the stream falls behind the wall clock by that much
+                    # every second — 0.1–0.2 %, ~7 s/hour — and YouTube
+                    # reports "video output low" on a box that is otherwise
+                    # perfect (15 Oct 2026, six sheets). A blocked write
+                    # (ffmpeg not reading yet) resets the schedule instead
+                    # of bursting to catch up.
+                    due = time.monotonic()
                     while True:
                         fifo.write(self.frames[key])
-                        time.sleep(self.frame_interval)
+                        due += self.frame_interval
+                        wait = due - time.monotonic()
+                        if wait > 0:
+                            time.sleep(wait)
+                        else:
+                            due = time.monotonic()
             except BrokenPipeError:
                 # ffmpeg restarted; reopen and the stream self-recovers
                 log(f"{kind} {sheet}: reader went away, waiting for it to return")
@@ -300,14 +318,6 @@ class Renderer:
                         self.mark_rail_pending((m.get("club") or {}).get("rail_rev"))
                     elif m.get("type") == "rail":
                         self.mark_rail_pending(m.get("rev"))
-                    elif m.get("type") == "club":
-                        # Club settings changed (e.g. the idle message):
-                        # re-shoot every bug; rev=None forces it.
-                        with self.cond:
-                            for n in sorted(self.known_sheets):
-                                self.pending.add((BUG, n))
-                            self.cond.notify_all()
-                        log("club settings changed: re-rendering scorebugs")
                     elif m.get("type") == "state":
                         s = m["state"]
                         n = int(s["sheet"])
@@ -333,7 +343,7 @@ def parse_sheets(spec):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Counter scorebug renderer")
-    parser.add_argument("--server", default="https://curling.cam")
+    parser.add_argument("--server", default="https://counter.gareth.live")
     parser.add_argument("--club", required=True, help="club slug, e.g. kelowna")
     parser.add_argument("--fifo-dir", default="/run/counter",
                         help="where the bug-NN.fifo pipes live")

@@ -83,8 +83,11 @@ frame = bytes((208, 59, 59, 255)) * (640 * 360)
 while True:
     try:
         with open(sys.argv[1], "wb", buffering=0) as f:
+            due = time.monotonic()
             while True:
-                f.write(frame); time.sleep(1)
+                f.write(frame)
+                due += 1.0
+                time.sleep(max(0.0, due - time.monotonic()))
     except (BrokenPipeError, OSError):
         time.sleep(0.5)
 EOF

@@ -132,11 +132,18 @@ tools/bench.sh --sheets 6 --encoder vaapi          # synthetic sources
 tools/bench.sh --sheets 6 --encoder vaapi --real   # the club's cameras
 ```
 
-A live pipeline cannot exceed 1.0× — output follows input — so a
-channel that keeps up reads ~0.97–0.99× over 60 s (startup counts as
-wall time). The bench passes a channel at ≥ (1 − 3 s/duration) **with
-zero dropped frames**; drops are the real sign of falling behind.
-`--duration 300` tightens the bar. Note that pre-10th-gen
+A live pipeline cannot exceed 1.0× — output follows input — and a
+channel that keeps up must read 1.00× once startup is excluded. Until
+15 Oct 2026 this said "~0.97–0.99× is fine": it was not. The synthetic
+tile writers paced themselves with "write, sleep(1)", which runs ~0.2 %
+slow, and through the overlay the tile cadence is the stream's clock —
+the bench was measuring that drift and calling it startup. The
+production renderer had the same loop, and six real sheets drifted
+~8 s/hour until YouTube reported *video output low*. Both are now paced
+on an absolute schedule. The bench passes a channel at ≥ (1 − 3 s/duration)
+**with zero dropped frames**; `--duration 300` tightens the bar, and the
+status page's Encoder clock column is the live-pipeline version of the
+same check. Note that pre-10th-gen
 refurb boards have no Resizable BAR; the media engine is believed to be
 largely indifferent but the bench, not the belief, is the gate. Record
 date, box, encoder and speeds in the deployment notes.

@@ -95,9 +95,11 @@ Either way: say what you could not run rather than faking a result.
 - `./tools/bench.sh --sheets 6 --encoder vaapi` (add `--real` to use the
   club's cameras). This is the gate before any club buys hardware: every
   channel must pass the bench's own bar — ≥ (1 − 3 s/duration) with
-  **zero dropped frames**; a live pipeline cannot exceed 1.0x, so do
-  not read ~0.98x as a failure. It cannot run in a
-  sandbox — report it as not-run, do not fake a result.
+  **zero dropped frames**. A live pipeline cannot exceed 1.0x, but a
+  sustained ~0.98x IS a failure for a live stream (the output clock falls
+  behind the wall clock and YouTube starves within half an hour) — the
+  15 Oct 2026 lesson; the README's bench section says why. It cannot run
+  in a sandbox — report it as not-run, do not fake a result.
 
 ### E. Design-conformance review (read and reason)
 Confirm the non-negotiables actually hold in the code, not just the docs:

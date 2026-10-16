@@ -129,8 +129,11 @@ def w(p):
     while True:
         try:
             with open(p, "wb", buffering=0) as f:
-                while True:
-                    f.write(frame); time.sleep(1)
+                due = time.monotonic()
+                while True:         # absolute schedule: a "write, sleep(1)" tile
+                    f.write(frame)  # runs ~0.2 % slow, and so does the stream
+                    due += 1.0
+                    time.sleep(max(0.0, due - time.monotonic()))
         except (BrokenPipeError, OSError):
             time.sleep(0.5)
 for i in range(1, n+1):
